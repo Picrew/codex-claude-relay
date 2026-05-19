@@ -142,6 +142,154 @@ npm unlink -g       # remove the global symlink
 --debug          Verbose discovery / parsing info on stderr.
 ```
 
+## Walkthrough
+
+The two main flows are *Claude Code → Codex* and *Codex → Claude Code*. They are symmetric; pick the one that matches the direction you're switching.
+
+### Scenario A: Claude Code → Codex
+
+You've been working in Claude Code, you want Codex to continue.
+
+**Step 1 — Leave Claude Code (or just open a new terminal).**
+
+You don't need to exit cleanly. Claude Code flushes its JSONL transcript as you go, so even mid-conversation the latest events are on disk. Either type `/exit` inside Claude Code, or open a new terminal tab (`Cmd+T` in iTerm / Terminal) and keep Claude running in the background — both work.
+
+> ⚠ Do **not** type `relay codex` into the Claude Code prompt itself. The Claude REPL will treat it as a message to the model, not a shell command. Always run `relay` from a regular shell.
+
+**Step 2 — `cd` into the repo.**
+
+```bash
+cd /path/to/your/repo
+```
+
+The current directory matters: context-relay uses it (plus `git rev-parse --show-toplevel`) to pick the right past session.
+
+**Step 3 — Sanity check what would be sent.**
+
+```bash
+relay preview codex --max-chars 8000 | less
+```
+
+Scroll through and verify:
+
+- **Original task** — does the first paragraph match what you originally asked Claude to do?
+- **Subsequent user instructions** — are your follow-up messages there?
+- **Files touched or inspected** — is the list reasonable?
+- **Recent conversation tail** — does it cover the last few exchanges?
+
+If the original task is truncated and you want more of it, raise `--max-chars` (e.g. `--max-chars 16000`).
+
+If `relay inspect` was already showing the right session at score ≥ 90, you can usually skip this step. Press `q` to exit `less`.
+
+**Step 4 — Launch Codex with the handoff.**
+
+```bash
+relay codex
+```
+
+You'll see stderr print `codex-claude-relay: launching \`codex\` with handoff (N chars)`, then Codex's TUI opens. The handoff arrives as Codex's first user message:
+
+- If the handoff is ≤ 8 KB, it's passed inline as the first message.
+- If it's > 8 KB, context-relay writes it to a `0600` temp file (under `$TMPDIR`) and passes a short reference prompt: *"Read the handoff context file at … and continue."* Codex calls its file-read tool, reads the handoff, and proceeds. The temp file is deleted when Codex exits.
+
+Either way, Codex's first response will acknowledge the context (~10 s round-trip). After that you continue typing as usual.
+
+**Step 5 — Verify the handoff actually landed.**
+
+Once Codex finishes its first reply, ask it something only the prior session would know:
+
+```
+我之前在 Claude 里问的第一个问题是什么？逐字告诉我。
+列一下 Claude 都动过哪些文件，跑过哪些命令。
+```
+
+Or, in English:
+
+```
+Quote my original first question to the previous agent verbatim.
+List every file the previous agent touched and the commands it ran.
+```
+
+If Codex can answer accurately, the handoff is working. Continue your work.
+
+### Scenario B: Codex → Claude Code
+
+Symmetric to Scenario A. You've been working in Codex, you want Claude Code to continue.
+
+**Step 1 — Leave Codex (or open a new terminal).** Codex also flushes its rollout JSONL continuously.
+
+**Step 2 — `cd` into the repo.**
+
+```bash
+cd /path/to/your/repo
+```
+
+**Step 3 — Preview.**
+
+```bash
+relay preview claude --max-chars 8000 | less
+```
+
+If Codex worked in a worktree or under a subdir, the cwd recorded in the session might not match your current git root. `relay inspect` will show the score; if it's low (< 60), try `--last`:
+
+```bash
+relay preview claude --last
+```
+
+**Step 4 — Launch.**
+
+```bash
+relay claude
+```
+
+Claude Code's TUI opens. The handoff becomes its first user message (or temp-file ref for handoffs > 8 KB).
+
+**Step 5 — Verify.**
+
+```
+Quote my original first question to the previous Codex session verbatim.
+Summarize what Codex got working and what's still open.
+```
+
+### Side-by-side mode (don't actually "switch", run both)
+
+You don't have to close one to use the other. Open two terminal tabs:
+
+| Tab 1                        | Tab 2                          |
+| ---------------------------- | ------------------------------ |
+| `codex` (or `claude`) keeps running | `cd repo && relay claude` (or `relay codex`) |
+
+Both agents now have the same repo state plus the same prior context. Useful when you want a second opinion on the same problem without losing your original session.
+
+### Useful flags in practice
+
+```bash
+# Cwd doesn't match the recorded one (worktree, moved repo, symlink, etc.)
+relay codex --last
+
+# Receiving agent should see your uncommitted work too
+relay codex --with-diff
+
+# Bigger handoff — more original task + more conversation tail
+relay codex --max-chars 20000
+
+# See what would happen without launching
+relay codex --dry-run
+
+# Diagnose which session was picked and why
+relay codex --debug --dry-run
+
+# Trust the transcript, skip redaction (rare)
+relay codex --no-redact
+```
+
+### What does *not* work
+
+- Running `relay` inside the source agent's REPL itself. Always run from a regular shell.
+- Switching between repos in one command. `relay` operates on the **current** git root only.
+- Cross-machine handoff. Transcripts are local. Copy the JSONL across by hand if you really need to.
+- Forging a fake "previous session" so the receiving agent thinks it's literally resuming. The handoff is structured context, not a session import — see [FAQ](#faq).
+
 ## Example: `relay inspect`
 
 ```

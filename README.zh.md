@@ -141,6 +141,147 @@ npm unlink -g       # 拆掉全局符号链接
 --debug          stderr 输出详细发现 / 解析信息
 ```
 
+## 完整 Usage 教程
+
+两种主流向：*Claude Code → Codex* 与 *Codex → Claude Code*。两边是对称的，按你要切的方向看对应那一段就行。
+
+### 场景 A：Claude Code → Codex
+
+你在 Claude Code 里干了一会儿，想让 Codex 接着干。
+
+**Step 1 — 离开 Claude Code（或者直接开新终端窗口）。**
+
+不需要"干净退出"。Claude Code 的 JSONL transcript 是边干边落盘的，哪怕你不正式退出，最近的事件也都在硬盘上。要么在 Claude Code 里输入 `/exit`，要么直接开一个新终端 tab（iTerm / Terminal 里 `Cmd+T`），让 Claude 在后台保持运行 —— 两种都可以。
+
+> ⚠ **不要**把 `relay codex` 输入到 Claude Code 自己的输入框里。Claude REPL 会把它当成发给模型的一句消息，不会当成 shell 命令执行。`relay` 必须在普通 shell 里跑。
+
+**Step 2 — `cd` 到你的仓库。**
+
+```bash
+cd /path/to/your/repo
+```
+
+当前目录很关键：context-relay 用 `git rev-parse --show-toplevel` 拿到 git root，再据此挑最相关的过往 session。
+
+**Step 3 — 先 preview，看 handoff 会包含什么（零启动、零风险）。**
+
+```bash
+relay preview codex --max-chars 8000 | less
+```
+
+翻一翻确认：
+
+- **Original task** —— 第一段是不是你原本让 Claude 做的事？
+- **Subsequent user instructions** —— 你的后续指令在不在？
+- **Files touched or inspected** —— 文件列表是不是合理？
+- **Recent conversation tail** —— 是否覆盖了最后几轮对话？
+
+如果原始任务被截断了想看完整版，加大 `--max-chars`（比如 `--max-chars 16000`）。
+
+如果 `relay inspect` 已经显示对应 session 的 score ≥ 90，这一步基本可以跳。按 `q` 退出 less。
+
+**Step 4 — 真正启动 Codex，带 handoff。**
+
+```bash
+relay codex
+```
+
+会看到 stderr 打 `codex-claude-relay: launching \`codex\` with handoff (N chars)`，然后 Codex 的 TUI 起来。handoff 作为 Codex 的首条 user message 进入：
+
+- handoff ≤ 8 KB：直接 inline 当首条消息传入
+- handoff > 8 KB：context-relay 把它写到 `$TMPDIR` 下一个 `0600` 临时文件，argv 里只放一段简短引用 prompt：「请读 handoff 文件 …，然后继续」。Codex 用文件读取工具读完后继续。Codex 退出时临时文件被删除。
+
+两种情况下，Codex 第一次回应都会"确认 + 概述下一步"（这就是上次讨论的那个 ~10s 回合）。之后你就照常打字。
+
+**Step 5 — 验证 Codex 真的看到了上下文。**
+
+等 Codex 第一次回应完，问它只有上次 session 才知道的事：
+
+```
+我之前在 Claude 里问的第一个问题是什么？逐字告诉我。
+列一下 Claude 都动过哪些文件，跑过哪些命令。
+```
+
+Codex 应该能准确答出来。能答 → handoff 起作用了，继续干活。
+
+### 场景 B：Codex → Claude Code
+
+与场景 A 完全对称。你在 Codex 里干了一会儿，想让 Claude Code 接着干。
+
+**Step 1 — 离开 Codex（或开新终端）。** Codex 的 rollout JSONL 也是连续落盘的。
+
+**Step 2 — `cd` 到仓库。**
+
+```bash
+cd /path/to/your/repo
+```
+
+**Step 3 — Preview。**
+
+```bash
+relay preview claude --max-chars 8000 | less
+```
+
+如果 Codex 是在 worktree 或子目录里跑的，session 里记录的 cwd 可能跟你当前 git root 对不上。`relay inspect` 会显示 score；如果太低（< 60），用 `--last`：
+
+```bash
+relay preview claude --last
+```
+
+**Step 4 — 启动。**
+
+```bash
+relay claude
+```
+
+Claude Code 的 TUI 起来，handoff 作为首条 user message 进入（> 8 KB 时同样走临时文件路径）。
+
+**Step 5 — 验证。**
+
+```
+逐字告诉我我在前一个 Codex session 里问的第一个问题。
+总结一下 Codex 已经搞定了什么，还有哪些没收尾。
+```
+
+### 并行模式（不切，两个一起开）
+
+不一定非要关掉一个再用另一个。开两个终端 tab：
+
+| Tab 1                                  | Tab 2                                                |
+| -------------------------------------- | ---------------------------------------------------- |
+| `codex`（或 `claude`）继续跑           | `cd repo && relay claude`（或 `relay codex`）        |
+
+两边都拿到同样的仓库状态 + 同样的过往上下文。需要让另一个 agent 给同一个问题第二个意见时很方便，不用丢掉原来的 session。
+
+### 实战常用 flag 组合
+
+```bash
+# 当前 cwd 跟 session 记录的对不上（worktree / 仓库挪过位置 / 软链）
+relay codex --last
+
+# 让接收方也看到你当前未提交的改动
+relay codex --with-diff
+
+# 调大 handoff 上限，让原始任务和对话尾部都更完整
+relay codex --max-chars 20000
+
+# 只看不启动
+relay codex --dry-run
+
+# 排查到底选了哪个 session、为什么选它
+relay codex --debug --dry-run
+
+# 信任 transcript，跳过脱敏（少用）
+relay codex --no-redact
+```
+
+### 不会工作的几种用法
+
+- 在源 agent 自己的 REPL 里跑 `relay`。永远在普通 shell 里跑。
+- 一条命令切换多个仓库。`relay` 只针对**当前** git root。
+- 跨机器 handoff。transcript 在本地。真要跨机的话只能手动拷 JSONL。
+- 期望接收方"真正续上"原 session ID。handoff 是结构化上下文摘要，不是 session 导入 —— 见 [FAQ](#faq)。
+
 ## 示例：`relay inspect`
 
 ```
