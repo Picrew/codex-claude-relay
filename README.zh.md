@@ -1,10 +1,25 @@
+<div align="center">
+
 # codex-claude-relay
 
-在 **OpenAI Codex CLI** 与 **Anthropic Claude Code** 之间做上下文接力：直接读两边写在本地的原生 session 文件，挑出和当前仓库相关的一次会话，压成一段 handoff prompt，把另一边的 CLI 用这段 prompt 当作首条用户输入启动。
+**在 OpenAI Codex CLI 与 Anthropic Claude Code 之间做无状态上下文接力。**
+
+读原生 session transcript → 压成一段 handoff prompt → 启动另一边 CLI 时把 prompt 当首条用户输入。
+
+[![npm](https://img.shields.io/npm/v/codex-claude-relay.svg?label=npm&logo=npm&color=cb3837)](https://www.npmjs.com/package/codex-claude-relay)
+[![downloads](https://img.shields.io/npm/dm/codex-claude-relay.svg?color=blue)](https://www.npmjs.com/package/codex-claude-relay)
+[![license](https://img.shields.io/npm/l/codex-claude-relay.svg?color=brightgreen)](LICENSE)
+[![node](https://img.shields.io/node/v/codex-claude-relay.svg?logo=node.js&color=339933)](https://nodejs.org)
+[![types](https://img.shields.io/npm/types/codex-claude-relay.svg?logo=typescript&color=3178c6)](https://www.typescriptlang.org/)
+[![GitHub stars](https://img.shields.io/github/stars/Picrew/codex-claude-relay?style=social)](https://github.com/Picrew/codex-claude-relay)
+
+[English](README.md) · **简体中文**
+
+</div>
+
+---
 
 不开数据库。不跑后台进程。不改写两边任何原生文件。
-
-🌐 English: [README.md](./README.md)
 
 ```bash
 codex                  # 在 Codex 里干一会儿

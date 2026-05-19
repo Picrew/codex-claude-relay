@@ -1,10 +1,25 @@
+<div align="center">
+
 # codex-claude-relay
 
-Hand off context between **OpenAI Codex CLI** and **Anthropic Claude Code** by reading their native session transcripts. Pick the right past session for the current repo, condense it into one handoff prompt, and launch the other CLI with that prompt as its first message.
+**Stateless context handoff between OpenAI Codex CLI and Anthropic Claude Code.**
+
+Read native session transcripts → condense into one handoff prompt → launch the other CLI pre-loaded with it.
+
+[![npm](https://img.shields.io/npm/v/codex-claude-relay.svg?label=npm&logo=npm&color=cb3837)](https://www.npmjs.com/package/codex-claude-relay)
+[![downloads](https://img.shields.io/npm/dm/codex-claude-relay.svg?color=blue)](https://www.npmjs.com/package/codex-claude-relay)
+[![license](https://img.shields.io/npm/l/codex-claude-relay.svg?color=brightgreen)](LICENSE)
+[![node](https://img.shields.io/node/v/codex-claude-relay.svg?logo=node.js&color=339933)](https://nodejs.org)
+[![types](https://img.shields.io/npm/types/codex-claude-relay.svg?logo=typescript&color=3178c6)](https://www.typescriptlang.org/)
+[![GitHub stars](https://img.shields.io/github/stars/Picrew/codex-claude-relay?style=social)](https://github.com/Picrew/codex-claude-relay)
+
+**English** · [简体中文](README.zh.md)
+
+</div>
+
+---
 
 No database. No daemon. No writes to either tool's session files.
-
-🌐 中文文档: [README.zh.md](./README.zh.md)
 
 ```bash
 codex                  # work for a while in Codex
