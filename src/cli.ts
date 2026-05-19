@@ -21,7 +21,7 @@ import type { AgentName, RelayOptions } from './types.js';
 
 const VERSION = '0.1.0';
 
-const HELP = `context-relay v${VERSION} — stateless handoff between Codex CLI and Claude Code
+const HELP = `codex-claude-relay v${VERSION} — stateless handoff between Codex CLI and Claude Code
 
 Usage:
   relay <target>            Launch the target agent with a handoff from the OTHER agent
@@ -102,7 +102,7 @@ function parseArgs(argv: string[]): ParsedArgs {
       const next = argv[i + 1];
       const n = next ? parseInt(next, 10) : NaN;
       if (!Number.isFinite(n) || n < 500) {
-        process.stderr.write(`context-relay: --max-chars requires a positive integer >= 500\n`);
+        process.stderr.write(`codex-claude-relay: --max-chars requires a positive integer >= 500\n`);
         process.exit(2);
       }
       options.maxChars = n;
@@ -112,7 +112,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (a.startsWith('--max-chars=')) {
       const n = parseInt(a.slice('--max-chars='.length), 10);
       if (!Number.isFinite(n) || n < 500) {
-        process.stderr.write(`context-relay: --max-chars requires a positive integer >= 500\n`);
+        process.stderr.write(`codex-claude-relay: --max-chars requires a positive integer >= 500\n`);
         process.exit(2);
       }
       options.maxChars = n;
@@ -120,7 +120,7 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
     if (a.startsWith('-')) {
-      process.stderr.write(`context-relay: unknown option ${a}\n`);
+      process.stderr.write(`codex-claude-relay: unknown option ${a}\n`);
       process.exit(2);
     }
     positional.push(a);
@@ -141,7 +141,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     const t = positional[1];
     if (t === 'claude' || t === 'codex') target = t;
     else {
-      process.stderr.write(`context-relay: \`preview\` requires a target: \`relay preview claude\` or \`relay preview codex\`\n`);
+      process.stderr.write(`codex-claude-relay: \`preview\` requires a target: \`relay preview claude\` or \`relay preview codex\`\n`);
       process.exit(2);
     }
   } else if (head === 'inspect') {
@@ -151,7 +151,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   } else if (head === 'version') {
     cmd = 'version';
   } else {
-    process.stderr.write(`context-relay: unknown command "${head}"\n`);
+    process.stderr.write(`codex-claude-relay: unknown command "${head}"\n`);
     process.exit(2);
   }
 
@@ -166,7 +166,7 @@ async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' 
   const git = detectGitContext(process.cwd());
   if (!git.inRepo) {
     process.stderr.write(
-      `context-relay: warning — current directory is not a git repo. Falling back to cwd: ${git.root}\n`
+      `codex-claude-relay: warning — current directory is not a git repo. Falling back to cwd: ${git.root}\n`
     );
   }
   debug(opts, `git root: ${git.root} (inRepo=${git.inRepo})`);
@@ -177,14 +177,14 @@ async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' 
   if (sourceAgent === 'codex') {
     if (!existsSync(CODEX_SESSIONS_DIR)) {
       process.stderr.write(
-        `context-relay: no Codex session directory found at ${CODEX_SESSIONS_DIR}.\n` +
+        `codex-claude-relay: no Codex session directory found at ${CODEX_SESSIONS_DIR}.\n` +
           `  Run Codex CLI at least once to generate transcripts, or check ~/.codex/sessions.\n`
       );
       return 1;
     }
     const pick = await pickCodexSession(git, opts.last);
     if (!pick) {
-      process.stderr.write(`context-relay: no Codex rollout files found under ${CODEX_SESSIONS_DIR}.\n`);
+      process.stderr.write(`codex-claude-relay: no Codex rollout files found under ${CODEX_SESSIONS_DIR}.\n`);
       return 1;
     }
     debug(opts, `picked codex session: ${pick.path} (score=${pick.score.toFixed(1)})`);
@@ -209,7 +209,7 @@ async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' 
     // sourceAgent === 'claude'
     if (!existsSync(CLAUDE_PROJECTS_DIR)) {
       process.stderr.write(
-        `context-relay: no Claude Code projects directory found at ${CLAUDE_PROJECTS_DIR}.\n` +
+        `codex-claude-relay: no Claude Code projects directory found at ${CLAUDE_PROJECTS_DIR}.\n` +
           `  Run Claude Code at least once to generate transcripts, or check ~/.claude/projects.\n`
       );
       return 1;
@@ -217,7 +217,7 @@ async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' 
     const pick = await pickClaudeSession(git, opts.last);
     if (!pick) {
       process.stderr.write(
-        `context-relay: no Claude Code session JSONLs found under ${CLAUDE_PROJECTS_DIR}.\n`
+        `codex-claude-relay: no Claude Code session JSONLs found under ${CLAUDE_PROJECTS_DIR}.\n`
       );
       return 1;
     }
@@ -255,7 +255,7 @@ async function finishHandoff(
   if (mode === 'preview' || opts.dryRun) {
     if (opts.dryRun && mode === 'launch') {
       process.stderr.write(
-        `context-relay: --dry-run — printing handoff (would launch \`${target}\`)\n\n`
+        `codex-claude-relay: --dry-run — printing handoff (would launch \`${target}\`)\n\n`
       );
     }
     process.stdout.write(prompt);
@@ -265,12 +265,12 @@ async function finishHandoff(
 
   if (!hasBinary(target)) {
     process.stderr.write(
-      `context-relay: \`${target}\` is not on PATH. Install it (or use \`relay preview ${target}\` / \`--dry-run\`).\n`
+      `codex-claude-relay: \`${target}\` is not on PATH. Install it (or use \`relay preview ${target}\` / \`--dry-run\`).\n`
     );
     return 127;
   }
 
-  process.stderr.write(`context-relay: launching \`${target}\` with handoff (${prompt.length} chars)\n`);
+  process.stderr.write(`codex-claude-relay: launching \`${target}\` with handoff (${prompt.length} chars)\n`);
   const res = await launchAgentAsync({ agent: target, prompt });
   return res.code;
 }
@@ -285,7 +285,7 @@ async function runInspect(opts: RelayOptions): Promise<number> {
   const codexOnPath = hasBinary('codex');
 
   const lines: string[] = [];
-  lines.push(`context-relay v${VERSION} inspect`);
+  lines.push(`codex-claude-relay v${VERSION} inspect`);
   lines.push('');
   lines.push(`Git context:`);
   lines.push(`  cwd:         ${process.cwd()}`);
@@ -343,7 +343,7 @@ async function main(): Promise<number> {
       return runInspect(parsed.options);
     case 'preview':
       if (!parsed.target) {
-        process.stderr.write(`context-relay: missing target for preview\n`);
+        process.stderr.write(`codex-claude-relay: missing target for preview\n`);
         return 2;
       }
       return runHandoff(parsed.target, parsed.options, 'preview');
@@ -356,6 +356,6 @@ async function main(): Promise<number> {
 main()
   .then((code) => process.exit(code))
   .catch((err) => {
-    process.stderr.write(`context-relay: unexpected error: ${err?.stack ?? err}\n`);
+    process.stderr.write(`codex-claude-relay: unexpected error: ${err?.stack ?? err}\n`);
     process.exit(1);
   });

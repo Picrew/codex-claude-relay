@@ -1,11 +1,11 @@
 {
-  "name": "context-relay",
+  "name": "codex-claude-relay",
   "version": "0.1.0",
   "description": "Stateless context handoff between OpenAI Codex CLI and Anthropic Claude Code. Reads native session transcripts, condenses them, and launches the other agent with the handoff as its initial prompt.",
   "type": "module",
   "bin": {
     "relay": "./dist/cli.js",
-    "context-relay": "./dist/cli.js"
+    "codex-claude-relay": "./dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

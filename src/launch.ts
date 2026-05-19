@@ -54,12 +54,12 @@ export function launchAgentAsync(opts: LaunchOptions): Promise<LaunchResult> {
   let argv: string[];
 
   if (opts.prompt.length > ARG_INLINE_LIMIT) {
-    const dir = mkdtempSync(join(tmpdir(), 'context-relay-'));
+    const dir = mkdtempSync(join(tmpdir(), 'codex-claude-relay-'));
     tempFile = join(dir, 'handoff.md');
     writeFileSync(tempFile, opts.prompt, { encoding: 'utf8', mode: 0o600 });
     const refPrompt =
       `Read the handoff context file at "${tempFile}" and continue the prior session ` +
-      `(it was produced by context-relay). After reading, briefly confirm what you ` +
+      `(it was produced by codex-claude-relay). After reading, briefly confirm what you ` +
       `understand the next action to be, then proceed cautiously.`;
     argv = [...(opts.extraArgs ?? []), refPrompt];
   } else {
@@ -88,7 +88,7 @@ export function launchAgentAsync(opts: LaunchOptions): Promise<LaunchResult> {
     });
     child.on('error', (err) => {
       cleanup();
-      process.stderr.write(`context-relay: failed to launch \`${binary}\`: ${err.message}\n`);
+      process.stderr.write(`codex-claude-relay: failed to launch \`${binary}\`: ${err.message}\n`);
       resolve({ code: 127, argv, tempFile });
     });
   });

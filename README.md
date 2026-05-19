@@ -1,4 +1,4 @@
-# context-relay
+# codex-claude-relay
 
 Hand off context between **OpenAI Codex CLI** and **Anthropic Claude Code** by reading their native session transcripts. Pick the right past session for the current repo, condense it into one handoff prompt, and launch the other CLI with that prompt as its first message.
 
@@ -46,31 +46,79 @@ Both major coding agents already write rich transcripts to disk. They just don't
 
 The usual response is a "memory sync" tool. Those almost always introduce a *third* store (vector DB, JSON cache, `.ai/handoff.md`) that neither native tool consults. Now you have three sources of truth and the new one drifts out of date.
 
-context-relay never stores anything. Every invocation re-reads the native transcripts. The two tools remain the only sources of truth.
+codex-claude-relay never stores anything. Every invocation re-reads the native transcripts. The two tools remain the only sources of truth.
 
 | Approach                                    | Persistent store | Mutates native files | Reads native transcripts |
 | ------------------------------------------- | :--------------: | :------------------: | :----------------------: |
 | Manual copy-paste                           | —                | no                   | —                        |
 | Vector-DB memory layer                      | yes              | no                   | sometimes                |
 | `.ai/handoff.md` checked into repo          | yes              | no                   | no                       |
-| **context-relay**                           | no               | no                   | yes                      |
+| **codex-claude-relay**                           | no               | no                   | yes                      |
 
 ## Install
 
-Requires Node.js 20+. Both `claude` and `codex` should be on `PATH` if you want to actually launch them (otherwise `relay preview` / `--dry-run` still work).
+Requires Node.js 20+ (check with `node --version`).
+
+### Option A — clone, build, link (recommended)
+
+`npm install` only fetches the two devDependencies (`typescript`, `tsx`). `npm run build` produces `dist/cli.js`. **`npm link` is the separate step that puts the `relay` command on your `PATH`.** Skipping it is the most common reason for `command not found: relay`.
 
 ```bash
 git clone https://github.com/Picrew/codex-claude-relay
 cd codex-claude-relay
-npm install
-npm run build
-npm link          # exposes `relay` globally
+npm install        # fetch devDeps (typescript, tsx)
+npm run build      # compile src/ → dist/
+npm link           # register `relay` and `codex-claude-relay` globally
 ```
 
-Or run directly without linking:
+Verify:
 
 ```bash
-node dist/cli.js inspect
+which relay        # should print a path under your npm global prefix
+relay --version    # should print 0.1.0
+relay inspect      # should list discovered sessions
+```
+
+If `npm link` reports a permission error, your global `npm` prefix isn't user-writable. Either fix the prefix (`npm config set prefix "$HOME/.npm-global"` and add `$HOME/.npm-global/bin` to `PATH`) or use Option B.
+
+### Option B — no link, run via node
+
+If you don't want to link globally:
+
+```bash
+node /absolute/path/to/codex-claude-relay/dist/cli.js inspect
+```
+
+A shell alias is the lightest workaround:
+
+```bash
+echo 'alias relay="node $HOME/path/to/codex-claude-relay/dist/cli.js"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Option C — install globally from a tarball
+
+If the package is published (it currently isn't, but the layout supports it):
+
+```bash
+npm install -g codex-claude-relay
+```
+
+### Requirements for actually launching agents
+
+`claude` and `codex` must be on `PATH` for `relay claude` and `relay codex` to spawn them:
+
+```bash
+which claude codex
+```
+
+If either is missing, install it from its vendor — `relay preview`, `relay inspect`, and `--dry-run` still work without them.
+
+### Uninstall
+
+```bash
+cd codex-claude-relay
+npm unlink -g       # remove the global symlink
 ```
 
 ## Commands
@@ -99,7 +147,7 @@ node dist/cli.js inspect
 ```
 $ cd ~/work/my-project
 $ relay inspect
-context-relay v0.1.0 inspect
+codex-claude-relay v0.1.0 inspect
 
 Git context:
   cwd:         /Users/alice/work/my-project
@@ -197,7 +245,7 @@ Pass `--last` to skip ranking and force the most-recent-by-mtime file. Pass `--d
 
 ## Native transcript formats
 
-context-relay parses the formats the official CLIs already write. It does not invent any file shape.
+codex-claude-relay parses the formats the official CLIs already write. It does not invent any file shape.
 
 **Codex CLI** — one JSONL per session, one line per event:
 
@@ -247,7 +295,7 @@ Tool outputs are clipped to ~400 chars per event so a single noisy `cat large-fi
 
 ## Safety
 
-| Concern                       | What context-relay does                                                                                            |
+| Concern                       | What codex-claude-relay does                                                                                            |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Native files                  | Opened read-only. Never written to `~/.codex/sessions/` or `~/.claude/projects/`.                                  |
 | Secrets in transcripts        | Redacted by default. See list below.                                                                               |
@@ -285,11 +333,11 @@ Pass `--no-redact` only when you trust the transcript.
 **Does Claude actually resume a Codex session?**
 No. Claude starts a fresh native session and reads the handoff as its first user message. The handoff is structured for an agent to consume but it is not a literal session import.
 
-**Does context-relay write anywhere on disk?**
+**Does codex-claude-relay write anywhere on disk?**
 Only the optional temp file used when the prompt exceeds the inline-argv limit (~8 KB). It lives under `$TMPDIR` and is unlinked when the child exits.
 
 **Can I save the handoff into my repo if I want to?**
-Sure — pipe it: `relay preview codex > .ai/handoff.md`. context-relay won't do this by default because the point is to stay stateless.
+Sure — pipe it: `relay preview codex > .ai/handoff.md`. codex-claude-relay won't do this by default because the point is to stay stateless.
 
 **Why not always include `git diff`?**
 Most sessions already touched files you've committed; the diff would be noise. Pass `--with-diff` when uncommitted work actually matters.

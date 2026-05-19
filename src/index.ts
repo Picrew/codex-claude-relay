@@ -1,4 +1,4 @@
-// Public programmatic API for context-relay. The CLI in src/cli.ts is the
+// Public programmatic API for codex-claude-relay. The CLI in src/cli.ts is the
 // primary interface, but this re-exports the building blocks for users who
 // want to embed handoff generation in their own tooling.
 
