@@ -58,17 +58,17 @@ codex-claude-relay 走另一条路：**什么都不存**。每次调用都重新
 
 需要 Node.js 20+（`node --version` 检查）。
 
-### 方案 A —— clone + build + link（推荐）
+两种安装方式：**从 npm 装**适合普通使用，**从源码装**适合阅读、修改、贡献代码。
 
-`npm install` 只下载两个 devDependency（`typescript`、`tsx`）。`npm run build` 把 `src/` 编译到 `dist/`。**`npm link` 是单独的一步，它才会把 `relay` 命令暴露到全局 `PATH`。**跳过这步就是 `command not found: relay` 的最常见原因。
+### 方案 A —— 从 npm 安装（推荐普通用户）
+
+包已经发布到 npm 公共 registry：[`codex-claude-relay`](https://www.npmjs.com/package/codex-claude-relay)。
 
 ```bash
-git clone https://github.com/Picrew/codex-claude-relay
-cd codex-claude-relay
-npm install        # 装 devDeps（typescript, tsx）
-npm run build      # 编译 src/ → dist/
-npm link           # 把 `relay` 和 `codex-claude-relay` 注册到全局
+npm install -g codex-claude-relay
 ```
+
+这一步会把 `relay` 和 `codex-claude-relay` 同时注册到 `PATH`。
 
 验证：
 
@@ -78,29 +78,61 @@ relay --version    # 应该打印 0.1.0
 relay inspect      # 应该列出发现的 session
 ```
 
-如果 `npm link` 报权限错误，说明你的 npm 全局 prefix 不可写。要么把 prefix 改到 HOME 下（`npm config set prefix "$HOME/.npm-global"`，然后把 `$HOME/.npm-global/bin` 加进 `PATH`），要么走方案 B。
-
-### 方案 B —— 不 link，直接 node 跑
-
-不想 link 全局：
+只想临时试一次、不想全局装：
 
 ```bash
-node /absolute/path/to/codex-claude-relay/dist/cli.js inspect
+npx codex-claude-relay@latest inspect
 ```
 
-最轻的替代是加个 shell alias：
+如果 `npm install -g` 报 `EACCES` 权限错误，说明你的 npm 全局 prefix 不可写。**不要用 `sudo`**，改 prefix 才是正路：
+
+```bash
+npm config set prefix "$HOME/.npm-global"
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+npm install -g codex-claude-relay
+```
+
+以后升级：
+
+```bash
+npm install -g codex-claude-relay@latest
+```
+
+卸载：
+
+```bash
+npm uninstall -g codex-claude-relay
+```
+
+### 方案 B —— 从源码安装（推荐贡献者）
+
+想改代码、跑测试、提 PR 用这个。
+
+```bash
+git clone https://github.com/Picrew/codex-claude-relay
+cd codex-claude-relay
+npm install        # 装 devDeps（typescript, tsx）
+npm run build      # 编译 src/ → dist/
+npm link           # 把 `relay` 和 `codex-claude-relay` 注册到全局
+```
+
+`npm install` 只下载两个 devDependency（`typescript`、`tsx`）。`npm run build` 把 `src/` 编译到 `dist/`。**`npm link` 是单独的一步，它才把 `relay` 命令暴露到全局 `PATH`** —— 跳过这步就是 `command not found: relay` 的最常见原因。
+
+验证命令同方案 A：`which relay` / `relay --version` / `relay inspect`。
+
+不想 link 全局，可以用 shell alias：
 
 ```bash
 echo 'alias relay="node $HOME/path/to/codex-claude-relay/dist/cli.js"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-### 方案 C —— 从 tarball 全局装
-
-如果这个包发布到 npm 了（当前还没，但结构支持）：
+卸载：
 
 ```bash
-npm install -g codex-claude-relay
+cd codex-claude-relay
+npm unlink -g
 ```
 
 ### 真正启动 agent 的前提
@@ -112,13 +144,6 @@ which claude codex
 ```
 
 如果哪个没有，去对应官网装。`relay preview`、`relay inspect`、`--dry-run` 不依赖它们也能用。
-
-### 卸载
-
-```bash
-cd codex-claude-relay
-npm unlink -g       # 拆掉全局符号链接
-```
 
 ## 命令
 

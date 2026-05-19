@@ -59,17 +59,17 @@ codex-claude-relay never stores anything. Every invocation re-reads the native t
 
 Requires Node.js 20+ (check with `node --version`).
 
-### Option A — clone, build, link (recommended)
+Two install paths: **from npm** for normal use, **from source** if you want to read, modify, or contribute to the code.
 
-`npm install` only fetches the two devDependencies (`typescript`, `tsx`). `npm run build` produces `dist/cli.js`. **`npm link` is the separate step that puts the `relay` command on your `PATH`.** Skipping it is the most common reason for `command not found: relay`.
+### Method A — from npm (recommended for users)
+
+The package is published as [`codex-claude-relay`](https://www.npmjs.com/package/codex-claude-relay) on the public npm registry.
 
 ```bash
-git clone https://github.com/Picrew/codex-claude-relay
-cd codex-claude-relay
-npm install        # fetch devDeps (typescript, tsx)
-npm run build      # compile src/ → dist/
-npm link           # register `relay` and `codex-claude-relay` globally
+npm install -g codex-claude-relay
 ```
+
+That puts both `relay` and `codex-claude-relay` on your `PATH`.
 
 Verify:
 
@@ -79,29 +79,61 @@ relay --version    # should print 0.1.0
 relay inspect      # should list discovered sessions
 ```
 
-If `npm link` reports a permission error, your global `npm` prefix isn't user-writable. Either fix the prefix (`npm config set prefix "$HOME/.npm-global"` and add `$HOME/.npm-global/bin` to `PATH`) or use Option B.
-
-### Option B — no link, run via node
-
-If you don't want to link globally:
+Want to try it once without installing globally:
 
 ```bash
-node /absolute/path/to/codex-claude-relay/dist/cli.js inspect
+npx codex-claude-relay@latest inspect
 ```
 
-A shell alias is the lightest workaround:
+If `npm install -g` hits an `EACCES` permission error, your npm global prefix isn't user-writable. Fix the prefix instead of using `sudo`:
+
+```bash
+npm config set prefix "$HOME/.npm-global"
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+npm install -g codex-claude-relay
+```
+
+Upgrade later:
+
+```bash
+npm install -g codex-claude-relay@latest
+```
+
+Uninstall:
+
+```bash
+npm uninstall -g codex-claude-relay
+```
+
+### Method B — from source (recommended for contributors)
+
+Use this if you want to modify the code, run tests, or send a PR.
+
+```bash
+git clone https://github.com/Picrew/codex-claude-relay
+cd codex-claude-relay
+npm install        # fetch devDeps (typescript, tsx)
+npm run build      # compile src/ → dist/
+npm link           # register `relay` and `codex-claude-relay` globally
+```
+
+`npm install` only fetches the two devDependencies (`typescript`, `tsx`). `npm run build` produces `dist/cli.js`. **`npm link` is the separate step that puts the `relay` command on your `PATH`** — skipping it is the most common reason for `command not found: relay`.
+
+Verify with the same `which relay` / `relay --version` / `relay inspect` commands as Method A.
+
+Don't want to register globally? Use a shell alias:
 
 ```bash
 echo 'alias relay="node $HOME/path/to/codex-claude-relay/dist/cli.js"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-### Option C — install globally from a tarball
-
-If the package is published (it currently isn't, but the layout supports it):
+Uninstall:
 
 ```bash
-npm install -g codex-claude-relay
+cd codex-claude-relay
+npm unlink -g
 ```
 
 ### Requirements for actually launching agents
@@ -113,13 +145,6 @@ which claude codex
 ```
 
 If either is missing, install it from its vendor — `relay preview`, `relay inspect`, and `--dry-run` still work without them.
-
-### Uninstall
-
-```bash
-cd codex-claude-relay
-npm unlink -g       # remove the global symlink
-```
 
 ## Commands
 
