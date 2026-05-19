@@ -1,229 +1,338 @@
 # context-relay
 
-> Stateless context handoff between **OpenAI Codex CLI** and **Anthropic Claude Code**.
-> No database. No new memory layer. Just native transcripts → compact handoff → one-line launch.
+Hand off context between **OpenAI Codex CLI** and **Anthropic Claude Code** by reading their native session transcripts. Pick the right past session for the current repo, condense it into one handoff prompt, and launch the other CLI with that prompt as its first message.
+
+No database. No daemon. No writes to either tool's session files.
 
 🌐 中文文档: [README.zh.md](./README.zh.md)
 
----
-
-## The problem
-
-You're in the middle of a session in Codex CLI. You hit a wall — maybe Claude Code
-handles this kind of refactor better. You switch.
-
-But now Claude doesn't know:
-
-- what task you were working on
-- what files Codex already touched
-- what shell commands have been run
-- which approaches were tried and discarded
-- what's still TODO
-
-So you spend the first five minutes pasting context, hoping you didn't miss anything.
-
-Going back the other way is just as painful.
-
-The same problem occurs whenever people juggle two CLI coding agents. People have started
-building "memory sync" tools for this — but those almost always end up creating a *third*
-memory store (vector DB, `.ai/handoff.md` file, cloud sync, …) that the two native tools
-don't know about. Now you have **three** sources of truth, and the new one always
-drifts out of date.
-
-## What `context-relay` is
-
-`context-relay` is intentionally narrow:
-
-1. Read the **native** transcript files Codex and Claude Code already write to disk.
-   - Codex CLI: `~/.codex/sessions/**/rollout-*.jsonl`
-   - Claude Code: `~/.claude/projects/<encoded-dir>/*.jsonl` (+ optional `memory/MEMORY.md`)
-2. Pick the most relevant recent session for your **current git repository**.
-3. Condense it into a compact, **agent-readable** handoff prompt.
-4. Launch the other CLI with that prompt as the initial input.
-
-That's the whole product. No database. No background daemon. No mutation of
-native files. No fake session IDs.
-
-```
-codex
-# work for a while, decide Claude is better for the next step
-
-relay claude       # condense the Codex session, launch `claude` with it as the initial prompt
-
-# later…
-relay codex        # condense the Claude session, launch `codex` with it as the initial prompt
+```bash
+codex                  # work for a while in Codex
+relay claude           # condense the Codex session, launch `claude` pre-loaded with it
+relay codex            # later: condense the Claude session, launch `codex` pre-loaded with it
 ```
 
-## What it deliberately is **not**
+## How it works
 
-- **Not** a memory database. There's no vector store, no SQLite, no JSON cache.
-- **Not** a session importer. It cannot make Claude believe it is continuing a real
-  Codex session ID — that would require forging native session files, which the
-  authoring tools may overwrite or invalidate at any time.
-- **Not** a sync tool. It runs once per invocation, then exits.
-- **Not** writing to `.ai/handoff.md` or any repo file by default. Set `--with-diff`
-  or use `relay preview` if you want to inspect.
+```
+  ┌──────────────────────────────────┐
+  │   ~/.codex/sessions/**/          │ ──┐
+  │        rollout-*.jsonl           │   │
+  └──────────────────────────────────┘   │   pick best session for $PWD
+                                         │   (cwd match + recency)
+                                         ▼
+                              ┌──────────────────────┐
+                              │  stream-parse JSONL  │
+                              │  normalize events    │
+                              │  redact secrets      │ ─→ handoff (markdown, ~6–12 KB)
+                              │  render template     │
+                              └──────────────────────┘
+                                         ▲
+  ┌──────────────────────────────────┐   │
+  │ ~/.claude/projects/<encoded>/    │ ──┘
+  │        <session-uuid>.jsonl      │
+  │        memory/MEMORY.md          │
+  └──────────────────────────────────┘
+                                         │
+                                         ▼
+                              spawn `claude` or `codex`
+                              with the handoff as the
+                              initial user prompt
+```
+
+## Why
+
+Both major coding agents already write rich transcripts to disk. They just don't read each other's. So when you switch tools mid-task — Codex → Claude or Claude → Codex — you spend five minutes pasting back what you were doing, which files were touched, which commands failed.
+
+The usual response is a "memory sync" tool. Those almost always introduce a *third* store (vector DB, JSON cache, `.ai/handoff.md`) that neither native tool consults. Now you have three sources of truth and the new one drifts out of date.
+
+context-relay never stores anything. Every invocation re-reads the native transcripts. The two tools remain the only sources of truth.
+
+| Approach                                    | Persistent store | Mutates native files | Reads native transcripts |
+| ------------------------------------------- | :--------------: | :------------------: | :----------------------: |
+| Manual copy-paste                           | —                | no                   | —                        |
+| Vector-DB memory layer                      | yes              | no                   | sometimes                |
+| `.ai/handoff.md` checked into repo          | yes              | no                   | no                       |
+| **context-relay**                           | no               | no                   | yes                      |
 
 ## Install
 
-Requires **Node.js 20+**.
+Requires Node.js 20+. Both `claude` and `codex` should be on `PATH` if you want to actually launch them (otherwise `relay preview` / `--dry-run` still work).
 
 ```bash
-# From source
-git clone https://github.com/<you>/context-relay
-cd context-relay
+git clone https://github.com/Picrew/codex-claude-relay
+cd codex-claude-relay
 npm install
 npm run build
-npm link        # makes `relay` available globally
-
-# Or install globally from a published tarball
-npm install -g context-relay
+npm link          # exposes `relay` globally
 ```
 
-Make sure both `claude` and `codex` are on your `PATH` if you want the launch
-behavior; otherwise `--dry-run` / `relay preview` still work for inspecting the
-handoff.
-
-## Usage
-
-```
-relay <target>            Launch the target agent with a handoff from the OTHER agent
-relay preview <target>    Print the handoff that would be sent (no launch)
-relay inspect             Show what sessions were discovered
-
-Targets:
-  claude   Hand off Codex -> Claude Code
-  codex    Hand off Claude Code -> Codex
-
-Options:
-  --last              Use the most recently modified session, skipping the repo-relevance ranking
-  --with-diff         Append the current `git diff HEAD` to the handoff
-  --max-chars N       Cap the handoff size (default 12000)
-  --dry-run           Build and print the handoff, do not launch the target agent
-  --no-redact         Disable secret redaction (default is ON)
-  --debug             Verbose discovery / parsing info on stderr
-```
-
-### Examples
+Or run directly without linking:
 
 ```bash
-# Continue your Codex work in Claude Code
-relay claude
-
-# Continue your Claude Code work in Codex, including the current git diff
-relay codex --with-diff
-
-# Inspect what the handoff would look like, without launching anything
-relay preview claude
-relay preview codex --max-chars 6000
-
-# See which sessions context-relay would pick for this repo
-relay inspect
+node dist/cli.js inspect
 ```
 
-## Safety model
+## Commands
 
-- **Read-only** with respect to Codex and Claude Code files. We never write into
-  `~/.codex/sessions/` or `~/.claude/projects/`.
-- **Secret redaction is on by default.** API keys (`sk-…`, `sk-ant-…`, AWS,
-  Google, GitHub tokens), JWTs, PEM private keys, `Authorization:` headers,
-  `Set-Cookie:` headers, and common `*_SECRET=` / `*_TOKEN=` / `*_PASSWORD=`
-  env-var values are scrubbed before the prompt is built.
-- **Process-listing safety.** When the rendered handoff is longer than ~8 KB,
-  we write it to a `0600` file inside a per-invocation `0700` temp directory
-  and pass a short reference prompt to the target CLI instead of putting the
-  full handoff in `argv`. The temp file is deleted when the child exits.
-- **No shell.** `child_process.spawn` is called with `shell: false` so the
-  handoff is never interpolated through a shell.
+| Command                  | Effect                                                                |
+| ------------------------ | --------------------------------------------------------------------- |
+| `relay claude`           | Build handoff from latest relevant Codex session → launch `claude`    |
+| `relay codex`            | Build handoff from latest relevant Claude session → launch `codex`    |
+| `relay preview <target>` | Print the handoff that would be sent; don't launch                    |
+| `relay inspect`          | Show what would be picked, with scores and reasons                    |
 
-## How discovery works
+### Flags
 
-For `relay claude` (source = Codex):
+```
+--last           Use the most recently modified session, skipping the
+                 cwd-based ranking. Useful when cwd doesn't match.
+--with-diff      Append the current `git diff HEAD` to the handoff.
+--max-chars N    Cap the rendered handoff length (default 12000).
+--dry-run        Build the handoff and print it; do not launch.
+--no-redact      Disable secret redaction. Default is ON.
+--debug          Verbose discovery / parsing info on stderr.
+```
 
-1. Walk `~/.codex/sessions/**/rollout-*.jsonl`.
-2. Peek each file's `session_meta` line to read the recorded `cwd`.
-3. Rank by:
-   - **cwd match**: exact git root match > inside git root > path mentions repo name
-   - **recency**: linear decay over 14 days
-4. Use the top match (or the most recent file if `--last` is set).
+## Example: `relay inspect`
 
-For `relay codex` (source = Claude Code):
+```
+$ cd ~/work/my-project
+$ relay inspect
+context-relay v0.1.0 inspect
 
-1. Try the fast path `~/.claude/projects/<encoded-git-root>/`. (Claude Code
-   encodes path separators and dots as `-`, so `/Users/alice/foo.bar/baz`
-   becomes `-Users-alice-foo-bar-baz`.)
-2. Also broad-scan `~/.claude/projects/` as a fallback.
-3. Detect each transcript's `cwd` from its first user/assistant record.
-4. Same ranking as above.
-5. If `memory/MEMORY.md` and linked files exist in the project's directory,
-   include them in the handoff.
+Git context:
+  cwd:         /Users/alice/work/my-project
+  inRepo:      true
+  root:        /Users/alice/work/my-project
+  branch:      main
 
-`relay inspect` shows exactly what was discovered, which file would be picked,
-and why.
+Codex sessions (~/.codex/sessions):
+  dir exists:  true
+  count:       137
+  best:        ~/.codex/sessions/2026/05/14/rollout-2026-05-14T09-15-22-…jsonl
+               score=88.7  mtime=2026-05-14T01:22:08.142Z
+               cwd=/Users/alice/work/my-project
+               reasons: cwd matches git root exactly | recency +28.7 (age 0.4d)
+
+Claude Code sessions (~/.claude/projects):
+  dir exists:  true
+  count:       42
+  best:        ~/.claude/projects/-Users-alice-work-my-project/8c3f….jsonl
+               score=130.0  mtime=2026-05-19T14:10:01.000Z
+               cwd=/Users/alice/work/my-project
+               reasons: inside encoded project dir | cwd matches git root exactly | recency +30.0 (age 0.0d)
+
+Claude memory for this project:
+  exists:      false
+  bytes:       0
+
+Binaries on PATH:
+  claude:      yes
+  codex:       yes
+```
+
+## Example: what's actually in the handoff
+
+```
+You are continuing work in this repository after a context handoff from
+OpenAI Codex CLI to Anthropic Claude Code.
+
+Repository:
+- Path: /Users/alice/work/my-project
+- Branch: main
+- Git status summary:
+   M src/server.ts
+
+Original task:
+  Add rate limiting to the /api/upload endpoint.
+
+Subsequent user instructions:
+- use redis, not in-memory
+- ignore /health pings
+
+What has already been done / key decisions:
+- Implemented sliding-window limiter in src/middleware/rate.ts
+- Chose redis pipelining over a Lua script for simpler ops
+
+Files touched or inspected:
+- src/middleware/rate.ts
+- src/server.ts
+- test/rate.test.ts
+
+Commands run (★ = errored):
+- `npm test -- rate`
+- ★ `redis-cli ping`
+
+Errors observed:
+- redis-cli ping: Could not connect to Redis at 127.0.0.1:6379
+
+Recent conversation tail:
+- User: it should also rate-limit anonymous IPs
+- Assistant: Added a fallback bucket keyed by IP for unauthenticated calls.
+
+Safety notes for you, the receiving agent:
+- Do not assume the prior agent's conclusions are still correct.
+- Re-check current files and `git status` / `git diff` before editing.
+- Prefer the live repository state over anything implied by this transcript.
+```
+
+## Session discovery & ranking
+
+Both providers walk the canonical directory recursively, peek each file's metadata cheaply, then rank:
+
+```
+score = cwd_match_signal  +  recency_decay
+```
+
+| Signal                                | Codex weight | Claude weight |
+| ------------------------------------- | :----------: | :-----------: |
+| Recorded cwd equals git root          | +60          | +60           |
+| Recorded cwd inside git root          | +50          | +50           |
+| Recorded cwd mentions repo name       | +25          | +20           |
+| Inside Claude's encoded project dir   | —            | +40           |
+| Recency: linear decay 0 → 14 days     | +0 … +30     | +0 … +30      |
+
+Pass `--last` to skip ranking and force the most-recent-by-mtime file. Pass `--debug` to see the reasons string for the chosen candidate.
+
+## Native transcript formats
+
+context-relay parses the formats the official CLIs already write. It does not invent any file shape.
+
+**Codex CLI** — one JSONL per session, one line per event:
+
+```
+~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+```
+
+Each line is `{ "type", "payload", "timestamp" }`. Useful payload types:
+
+| `payload.type`           | What it carries                                |
+| ------------------------ | ---------------------------------------------- |
+| `session_meta`           | `cwd`, `id`, originator, model                 |
+| `message` (role=user)    | The user's message turn (`content[].input_text`) |
+| `message` (role=assistant) | The model's message turn (`content[].output_text`) |
+| `function_call`          | Tool invocation (`name`, JSON-string `arguments`) |
+| `function_call_output`   | Tool result (`output` is the captured text)    |
+
+**Claude Code** — one JSONL per session, grouped per project:
+
+```
+~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl
+```
+
+`<encoded-cwd>` is the absolute project path with `/` and `.` replaced by `-`. Each useful line:
+
+| `type`     | Carries                                                              |
+| ---------- | -------------------------------------------------------------------- |
+| `user`     | User turn or `tool_result` block(s); also `cwd`, `gitBranch`         |
+| `assistant`| Model turn: text + `tool_use` blocks (`name`, `input`)               |
+
+Tool calls live inside `message.content[]` as `{ type: "tool_use" }`. Their results land inside the next `user` line as `{ type: "tool_result" }`.
+
+If `~/.claude/projects/<encoded-cwd>/memory/` exists, its `MEMORY.md` and the `.md` files it links are included when generating the Claude → Codex handoff.
+
+## What gets filtered out
+
+To keep the handoff readable, the parser drops:
+
+- Codex `reasoning` events (the model's private chain-of-thought)
+- Codex `event_msg` / `turn_context` / `token_count` framing
+- Codex environment-context user messages (`<environment_context>…`)
+- Claude `<task-notification>`, `<system-reminder>`, lone `[Image: source: …]` markers, slash-command framing
+- Claude sidechain messages (`isSidechain: true`)
+- Anything matching the secret-redaction rules (see below)
+
+Tool outputs are clipped to ~400 chars per event so a single noisy `cat large-file` doesn't crowd out everything else.
+
+## Safety
+
+| Concern                       | What context-relay does                                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Native files                  | Opened read-only. Never written to `~/.codex/sessions/` or `~/.claude/projects/`.                                  |
+| Secrets in transcripts        | Redacted by default. See list below.                                                                               |
+| Process-list / argv leakage   | Handoffs > 8 KB are written to a `0600` temp file in a per-invocation `0700` dir; only a short ref prompt goes in `argv`. The temp file is unlinked when the child exits. |
+| Shell interpolation           | `spawn(..., { shell: false })`. The handoff is never interpreted by a shell.                                       |
+| Stale data                    | If the source session is > 24 h old, the handoff includes a `⚠ stale` notice.                                      |
+
+Redaction covers (case-insensitive where applicable):
+
+- OpenAI keys: `sk-…`, `sk-proj-…`, `sk-ant-…`
+- GitHub tokens: `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`
+- AWS access key IDs (`AKIA…`)
+- Google API keys (`AIza…`)
+- JWTs (three base64url segments separated by dots)
+- PEM private key blocks (`-----BEGIN … PRIVATE KEY-----` … `-----END …-----`)
+- `Authorization:` and `Set-Cookie:` headers
+- Env-var style `*SECRET*=`, `*TOKEN*=`, `*PASSWORD*=`, `*API_KEY*=`, `*CREDENTIAL*=` with ≥ 6-char values
+
+Pass `--no-redact` only when you trust the transcript.
 
 ## Limitations
 
-- **Codex CLI** and **Claude Code** must have actually written transcripts to
-  their canonical directories. If transcripts are disabled or deleted,
-  context-relay has nothing to work with.
-- The handoff is a **summary**, not a literal session import. The receiving
-  agent starts a fresh native session. We tell it explicitly: *do not assume
-  the prior agent's conclusions are still correct; re-check current files
-  before editing.*
-- Cross-machine handoffs aren't supported. The native transcripts live on
-  your local disk; context-relay just reads them.
-- Provider transcript formats may change. We parse defensively (skip
-  malformed lines, surface skip counts in `--debug`) but a major schema
-  change in Codex or Claude Code may require an update here.
-
-## Supported paths
-
-| Provider     | Path                                                            |
-| ------------ | --------------------------------------------------------------- |
-| Codex CLI    | `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`            |
-| Claude Code  | `~/.claude/projects/<encoded-dir>/<session-uuid>.jsonl`         |
-| Claude memory| `~/.claude/projects/<encoded-dir>/memory/MEMORY.md` and friends |
-
-If a future version of either tool changes these paths, please open an issue
-with the new layout.
+| Situation                                            | What happens                                                            |
+| ---------------------------------------------------- | ----------------------------------------------------------------------- |
+| Transcripts deleted or disabled                      | Nothing to read; `relay inspect` reports `count=0`.                     |
+| Two repos with the same basename                     | Cwd-exact-match (+60) still wins; otherwise check `--debug`.            |
+| Same project across multiple Claude sessions         | Highest cwd-score + most recent wins; pin with `--last` if you need to. |
+| Codex/Claude transcript schema changes upstream      | Parser skips malformed lines and reports the count in `--debug`.        |
+| Cross-machine handoff                                | Not supported. Transcripts are local-only.                              |
+| Huge tool outputs                                    | Clipped to ~400 chars per event in the handoff.                         |
+| Codex/Claude rotate or compact session files         | Once the file is gone, so is the context source.                        |
 
 ## FAQ
 
-**Can this really import a Codex session into Claude Code?**
-No. It injects a compact handoff prompt synthesized from Codex's native
-transcript. Claude starts a fresh session and receives the handoff as its
-initial user prompt.
+**Does Claude actually resume a Codex session?**
+No. Claude starts a fresh native session and reads the handoff as its first user message. The handoff is structured for an agent to consume but it is not a literal session import.
 
-**Does it store any extra memory?**
-No. There is no persistent store. Every invocation re-reads the native
-transcripts.
+**Does context-relay write anywhere on disk?**
+Only the optional temp file used when the prompt exceeds the inline-argv limit (~8 KB). It lives under `$TMPDIR` and is unlinked when the child exits.
 
-**Does it mutate the native Codex or Claude transcripts?**
-No. Open them in read-only mode only.
+**Can I save the handoff into my repo if I want to?**
+Sure — pipe it: `relay preview codex > .ai/handoff.md`. context-relay won't do this by default because the point is to stay stateless.
 
-**Can it work if I've disabled or deleted transcripts?**
-No. If the JSONL files aren't on disk, there is nothing to relay.
+**Why not always include `git diff`?**
+Most sessions already touched files you've committed; the diff would be noise. Pass `--with-diff` when uncommitted work actually matters.
 
-**Why not just use a vector DB?**
-That's a different product. context-relay is intentionally a one-line
-stateless launcher. If you want semantic search across all your past sessions,
-build that separately — it's not a goal here.
+**Why one big prompt, not a folder of fragments?**
+The receiving agent reads one prompt at the start of its turn. Splitting just forces it to re-concatenate.
 
-**Why a single file, not split per topic?**
-The receiving agent reads one prompt to start its turn. Splitting would just
-force the agent to ingest a directory of fragments, which it would
-re-concatenate anyway.
+**Can I run `relay` from inside Codex or Claude?**
+You can, but it'll generate a handoff for the *current* session it's reading — usually not what you want. The intended use is in a separate shell, after you step out of the agent.
+
+**Why does ranking depend on cwd, not on content?**
+Cheap and accurate enough in practice. Content-based ranking would need to read every transcript fully on every invocation. cwd-match + recency picks the right session for the current repo in milliseconds.
 
 ## Development
 
 ```bash
 npm install
-npm run typecheck
-npm test
-npm run build
+npm run typecheck     # strict TS, zero suppressions
+npm test              # node --test on the 17 unit tests
+npm run build         # tsc → dist/
 node dist/cli.js inspect
 ```
 
+Project layout:
+
+```
+src/
+  cli.ts              # arg parsing, command dispatch
+  index.ts            # programmatic exports
+  types.ts            # shared types only — no runtime
+  git.ts              # git rev-parse / branch / diff
+  parse/jsonl.ts      # streaming JSONL reader + helpers
+  providers/
+    codex.ts          # ~/.codex/sessions discovery + parsing
+    claude.ts         # ~/.claude/projects discovery + parsing + memory
+  redact.ts           # secret patterns
+  summarize.ts        # event digest + handoff template
+  launch.ts           # child_process spawn + temp-file fallback
+test/                 # node:test unit tests
+```
+
+Dependencies: only `typescript` and `tsx` as devDependencies. Zero runtime dependencies — the CLI uses Node built-ins exclusively.
+
 ## License
 
-MIT
+MIT. See [LICENSE](./LICENSE).
