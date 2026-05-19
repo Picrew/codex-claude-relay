@@ -35,6 +35,15 @@
     "context",
     "relay"
   ],
+  "author": "Jayden Lee <lij850601@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Picrew/codex-claude-relay.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Picrew/codex-claude-relay/issues"
+  },
+  "homepage": "https://github.com/Picrew/codex-claude-relay#readme",
   "engines": {
     "node": ">=20"
   },
