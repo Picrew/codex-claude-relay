@@ -7,7 +7,7 @@
 Read native session transcripts → condense into one handoff prompt → launch the other CLI pre-loaded with it.
 
 [![npm](https://img.shields.io/npm/v/codex-claude-relay.svg?label=npm&logo=npm&color=cb3837)](https://www.npmjs.com/package/codex-claude-relay)
-[![downloads](https://img.shields.io/npm/dm/codex-claude-relay.svg?color=blue)](https://www.npmjs.com/package/codex-claude-relay)
+[![runtime deps](https://img.shields.io/badge/runtime%20deps-0-brightgreen?logo=npm)](package.json)
 [![license](https://img.shields.io/npm/l/codex-claude-relay.svg?color=brightgreen)](LICENSE)
 [![node](https://img.shields.io/node/v/codex-claude-relay.svg?logo=node.js&color=339933)](https://nodejs.org)
 [![types](https://img.shields.io/npm/types/codex-claude-relay.svg?logo=typescript&color=3178c6)](https://www.typescriptlang.org/)

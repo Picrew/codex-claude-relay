@@ -7,7 +7,7 @@
 读原生 session transcript → 压成一段 handoff prompt → 启动另一边 CLI 时把 prompt 当首条用户输入。
 
 [![npm](https://img.shields.io/npm/v/codex-claude-relay.svg?label=npm&logo=npm&color=cb3837)](https://www.npmjs.com/package/codex-claude-relay)
-[![downloads](https://img.shields.io/npm/dm/codex-claude-relay.svg?color=blue)](https://www.npmjs.com/package/codex-claude-relay)
+[![runtime deps](https://img.shields.io/badge/runtime%20deps-0-brightgreen?logo=npm)](package.json)
 [![license](https://img.shields.io/npm/l/codex-claude-relay.svg?color=brightgreen)](LICENSE)
 [![node](https://img.shields.io/node/v/codex-claude-relay.svg?logo=node.js&color=339933)](https://nodejs.org)
 [![types](https://img.shields.io/npm/types/codex-claude-relay.svg?logo=typescript&color=3178c6)](https://www.typescriptlang.org/)
