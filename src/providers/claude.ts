@@ -1,8 +1,8 @@
 import { readdir, stat, readFile } from 'node:fs/promises';
 import { existsSync, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, sep } from 'node:path';
-import { parseJsonl, clip } from '../parse/jsonl.js';
+import { basename, join, sep } from 'node:path';
+import { findInJsonl, parseJsonl, clip } from '../parse/jsonl.js';
 import type {
   GitContext,
   ParsedSession,
@@ -151,6 +151,59 @@ export async function pickClaudeSession(
     return [...all].sort((a, b) => b.mtimeMs - a.mtimeMs)[0]!;
   }
   return all[0]!;
+}
+
+/**
+ * Claude Code names each transcript file by its session UUID:
+ *   <encoded-dir>/<uuid>.jsonl
+ */
+export function claudeSessionId(path: string): string {
+  return basename(path, '.jsonl');
+}
+
+/**
+ * Cheaply peek the first substantial user message in a Claude transcript,
+ * skipping framework noise (task notifications, system reminders, etc.).
+ */
+export async function peekClaudeOriginalTask(
+  path: string,
+  n: number = 80
+): Promise<string> {
+  const text = await findInJsonl<string>(
+    path,
+    (obj) => {
+      if (!obj || typeof obj !== 'object') return null;
+      const rec = obj as Record<string, unknown>;
+      if (rec.type !== 'user') return null;
+      if (rec.isSidechain === true) return null;
+      const message = rec.message as Record<string, unknown> | undefined;
+      if (!message || message.role !== 'user') return null;
+      const content = message.content;
+      let out = '';
+      if (typeof content === 'string') out = content;
+      else if (Array.isArray(content)) {
+        for (const c of content) {
+          if (!c || typeof c !== 'object') continue;
+          const obj2 = c as Record<string, unknown>;
+          if (obj2.type === 'text' && typeof obj2.text === 'string') {
+            out += obj2.text;
+          }
+          // skip tool_result and tool_use parts here
+        }
+      }
+      out = out.trim();
+      if (out.length < 12) return null;
+      // Skip framework noise mirroring parseClaudeSession's filter.
+      if (/^<(?:task-notification|system-reminder|command-name|command-message|command-args|local-command-stdout|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[\s>]/i.test(out)) {
+        return null;
+      }
+      if (/^(?:\[Image[: ][^\]]+\]\s*)+$/.test(out)) return null;
+      return out;
+    },
+    400
+  );
+  if (!text) return '(no user message found)';
+  return clip(text.replace(/\s+/g, ' '), n);
 }
 
 /* ----------------------------- memory ---------------------------------- */

@@ -167,12 +167,19 @@ If either is missing, install it from its vendor — `relay preview`, `relay ins
 | ------------------------ | --------------------------------------------------------------------- |
 | `relay claude`           | Build handoff from latest relevant Codex session → launch `claude`    |
 | `relay codex`            | Build handoff from latest relevant Claude session → launch `codex`    |
+| `relay list <target>`    | List candidate source sessions for the chosen target direction        |
 | `relay preview <target>` | Print the handoff that would be sent; don't launch                    |
 | `relay inspect`          | Show what would be picked, with scores and reasons                    |
 
 ### Flags
 
 ```
+--pick SELECTOR  Choose a specific source session instead of auto-pick:
+                   - a 1-based index from `relay list`     (e.g. --pick 2)
+                   - a session id or id prefix             (e.g. --pick ab11e518)
+                   - a path or path substring (with `/`)   (e.g. --pick rollout-2026-05-19)
+--all            In `relay list`, include sessions from unrelated repos
+                 (default: only show those scored > 0 for this repo).
 --last           Use the most recently modified session, skipping the
                  cwd-based ranking. Useful when cwd doesn't match.
 --with-diff      Append the current `git diff HEAD` to the handoff.
@@ -181,6 +188,39 @@ If either is missing, install it from its vendor — `relay preview`, `relay ins
 --no-redact      Disable secret redaction. Default is ON.
 --debug          Verbose discovery / parsing info on stderr.
 ```
+
+### Picking among multiple sessions
+
+For the same repo you usually have *several* past Claude or Codex sessions, each on a different topic. The handoff target needs to know which one to continue from.
+
+By default `relay codex` picks the highest-scored session for the current repo (cwd match + recency). If that's not the one you want — pick explicitly:
+
+```bash
+relay list codex                # see all relevant Claude sessions, numbered
+```
+
+```
+codex-claude-relay v0.1.0 — Claude Code sessions for /Users/alice/work/my-project
+---------------------------------------------------------------------------------
+
+   #  SCORE  AGE      SESSION        ORIGINAL TASK
+   1    130  1h ago   ab11e518-27f…  Add rate limiting to the /api/upload endpoint
+   2     95  8h ago   fda29ad7-506…  Fix the CI build failing on macOS only
+   3     50  1d ago   8c3f1d2e-123…  Investigate slow tests in src/auth/
+
+Pick one when launching the target agent:
+  relay codex --pick <#|id|path>
+```
+
+Then hand off the one you want:
+
+```bash
+relay codex --pick 2            # by row index
+relay codex --pick fda29ad7     # by session id (or id prefix)
+relay codex --pick rollout-2026-05-19  # by path substring (must contain a /)
+```
+
+The same `--pick` works on `relay preview <target>` for inspecting any session's handoff without launching.
 
 ## Walkthrough
 

@@ -86,3 +86,45 @@ export function clip(s: string, n: number): string {
   if (s.length <= n) return s;
   return s.slice(0, n) + `... (+${s.length - n} chars)`;
 }
+
+/**
+ * Stream-parse a JSONL file and return the first non-null result from `find`.
+ * Stops reading as soon as a match is found. Optionally caps how many lines
+ * we scan (cheap bail-out for "the field we want is near the start").
+ */
+export async function findInJsonl<T>(
+  path: string,
+  find: (obj: unknown, lineNo: number) => T | null,
+  maxLines: number = Infinity
+): Promise<T | null> {
+  let lineNo = 0;
+  const stream = createReadStream(path, { encoding: 'utf8' });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+
+  try {
+    for await (const raw of rl) {
+      lineNo += 1;
+      if (lineNo > maxLines) break;
+      const line = raw.trim();
+      if (!line) continue;
+      let obj: unknown;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      try {
+        const got = find(obj, lineNo);
+        if (got !== null && got !== undefined) {
+          return got;
+        }
+      } catch {
+        // skip malformed-but-valid-JSON record
+      }
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+  return null;
+}

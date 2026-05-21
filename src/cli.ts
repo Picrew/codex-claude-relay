@@ -5,6 +5,8 @@ import {
   pickCodexSession,
   parseCodexSession,
   discoverCodexSessions,
+  codexSessionId,
+  peekCodexOriginalTask,
   CODEX_SESSIONS_DIR,
 } from './providers/codex.js';
 import {
@@ -12,12 +14,15 @@ import {
   parseClaudeSession,
   discoverClaudeSessions,
   readClaudeMemory,
+  claudeSessionId,
+  peekClaudeOriginalTask,
   CLAUDE_PROJECTS_DIR,
 } from './providers/claude.js';
 import { renderHandoff } from './summarize.js';
 import { launchAgentAsync, hasBinary } from './launch.js';
+import { resolveSelector, relativeAge } from './select.js';
 import { DEFAULT_OPTIONS } from './types.js';
-import type { AgentName, RelayOptions } from './types.js';
+import type { AgentName, RelayOptions, SessionCandidate } from './types.js';
 
 const VERSION = '0.1.0';
 
@@ -26,6 +31,7 @@ const HELP = `codex-claude-relay v${VERSION} — stateless handoff between Codex
 Usage:
   relay <target>            Launch the target agent with a handoff from the OTHER agent
   relay preview <target>    Print the handoff that would be sent (no launch)
+  relay list <target>       List candidate sessions you could hand off from
   relay inspect             Show discovery results without parsing or launching
   relay --help              Show this help
   relay --version           Show version
@@ -35,6 +41,12 @@ Targets:
   codex    Handoff Claude Code -> Codex (reads ~/.claude/projects, launches \`codex\`)
 
 Options:
+  --pick SELECTOR     Choose a specific source session. SELECTOR is one of:
+                        - a 1-based index from \`relay list\`           (e.g. --pick 2)
+                        - a session id or id prefix                      (e.g. --pick ab11e518)
+                        - a path or path substring (must contain a /)    (e.g. --pick rollout-2026-05-19)
+  --all               In \`relay list\`, include sessions from unrelated repos
+                      (default: only show those scored > 0 for this repo)
   --last              Use the most recently modified session (skip repo-relevance ranking)
   --with-diff         Append \`git diff HEAD\` to the handoff
   --max-chars N       Cap the handoff size (default ${DEFAULT_OPTIONS.maxChars})
@@ -44,13 +56,16 @@ Options:
 
 Examples:
   relay claude
+  relay list codex                          # see what Claude sessions are available
+  relay codex --pick 2                      # use the 2nd from \`relay list codex\`
+  relay codex --pick ab11e518               # use a specific session by id prefix
   relay codex --with-diff
   relay preview claude --max-chars 6000
   relay inspect
 `;
 
 interface ParsedArgs {
-  cmd: 'claude' | 'codex' | 'preview' | 'inspect' | 'help' | 'version';
+  cmd: 'claude' | 'codex' | 'preview' | 'list' | 'inspect' | 'help' | 'version';
   target?: AgentName;
   options: RelayOptions;
   positional: string[];
@@ -98,6 +113,11 @@ function parseArgs(argv: string[]): ParsedArgs {
       i += 1;
       continue;
     }
+    if (a === '--all') {
+      options.all = true;
+      i += 1;
+      continue;
+    }
     if (a === '--max-chars') {
       const next = argv[i + 1];
       const n = next ? parseInt(next, 10) : NaN;
@@ -116,6 +136,26 @@ function parseArgs(argv: string[]): ParsedArgs {
         process.exit(2);
       }
       options.maxChars = n;
+      i += 1;
+      continue;
+    }
+    if (a === '--pick') {
+      const next = argv[i + 1];
+      if (!next || next.startsWith('-')) {
+        process.stderr.write(`codex-claude-relay: --pick requires a selector (index | id-prefix | path)\n`);
+        process.exit(2);
+      }
+      options.pick = next;
+      i += 2;
+      continue;
+    }
+    if (a.startsWith('--pick=')) {
+      const v = a.slice('--pick='.length);
+      if (!v) {
+        process.stderr.write(`codex-claude-relay: --pick requires a selector\n`);
+        process.exit(2);
+      }
+      options.pick = v;
       i += 1;
       continue;
     }
@@ -144,6 +184,14 @@ function parseArgs(argv: string[]): ParsedArgs {
       process.stderr.write(`codex-claude-relay: \`preview\` requires a target: \`relay preview claude\` or \`relay preview codex\`\n`);
       process.exit(2);
     }
+  } else if (head === 'list') {
+    cmd = 'list';
+    const t = positional[1];
+    if (t === 'claude' || t === 'codex') target = t;
+    else {
+      process.stderr.write(`codex-claude-relay: \`list\` requires a target: \`relay list claude\` or \`relay list codex\`\n`);
+      process.exit(2);
+    }
   } else if (head === 'inspect') {
     cmd = 'inspect';
   } else if (head === 'help') {
@@ -162,7 +210,15 @@ function debug(opts: RelayOptions, msg: string): void {
   if (opts.debug) process.stderr.write(`[relay] ${msg}\n`);
 }
 
-async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' | 'preview'): Promise<number> {
+/**
+ * Resolve which source session to use. Returns null on hard error (already
+ * reported to stderr by this function). Otherwise returns the chosen
+ * candidate, the full ranked list (for debug), and the source agent.
+ */
+async function pickSourceSession(
+  target: AgentName,
+  opts: RelayOptions
+): Promise<{ candidate: SessionCandidate; all: SessionCandidate[]; sourceAgent: AgentName; git: ReturnType<typeof detectGitContext> } | null> {
   const git = detectGitContext(process.cwd());
   if (!git.inRepo) {
     process.stderr.write(
@@ -174,27 +230,89 @@ async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' 
   const sourceAgent: AgentName = target === 'claude' ? 'codex' : 'claude';
   debug(opts, `source agent: ${sourceAgent}, target agent: ${target}`);
 
+  let all: SessionCandidate[];
   if (sourceAgent === 'codex') {
     if (!existsSync(CODEX_SESSIONS_DIR)) {
       process.stderr.write(
         `codex-claude-relay: no Codex session directory found at ${CODEX_SESSIONS_DIR}.\n` +
           `  Run Codex CLI at least once to generate transcripts, or check ~/.codex/sessions.\n`
       );
-      return 1;
+      return null;
     }
-    const pick = await pickCodexSession(git, opts.last);
-    if (!pick) {
+    all = await discoverCodexSessions(git);
+    if (all.length === 0) {
       process.stderr.write(`codex-claude-relay: no Codex rollout files found under ${CODEX_SESSIONS_DIR}.\n`);
-      return 1;
+      return null;
     }
-    debug(opts, `picked codex session: ${pick.path} (score=${pick.score.toFixed(1)})`);
-    debug(opts, `reasons: ${pick.reasons.join(' | ')}`);
+  } else {
+    if (!existsSync(CLAUDE_PROJECTS_DIR)) {
+      process.stderr.write(
+        `codex-claude-relay: no Claude Code projects directory found at ${CLAUDE_PROJECTS_DIR}.\n` +
+          `  Run Claude Code at least once to generate transcripts, or check ~/.claude/projects.\n`
+      );
+      return null;
+    }
+    all = await discoverClaudeSessions(git);
+    if (all.length === 0) {
+      process.stderr.write(
+        `codex-claude-relay: no Claude Code session JSONLs found under ${CLAUDE_PROJECTS_DIR}.\n`
+      );
+      return null;
+    }
+  }
 
-    const session = await parseCodexSession(pick.path);
+  // Resolve --pick against the same filtered view the user sees in `relay list`.
+  // (Score-0 candidates are sessions swept in by the broad scan but unrelated
+  // to the current repo; --all keeps them in scope.)
+  const relevant = opts.all ? all : all.filter((c) => c.score > 0);
+
+  // Selection priority: --pick > --last > top-of-ranking.
+  let candidate: SessionCandidate;
+  if (opts.pick) {
+    const res = resolveSelector(opts.pick, relevant);
+    if (res.kind === 'error') {
+      process.stderr.write(`codex-claude-relay: --pick ${opts.pick}: ${res.message}\n`);
+      if (res.matched && res.matched.length > 1) {
+        for (const m of res.matched.slice(0, 5)) {
+          process.stderr.write(`  - ${m.path}\n`);
+        }
+      }
+      // If filtering hid a match, hint at --all.
+      if (!opts.all) {
+        const wider = resolveSelector(opts.pick, all);
+        if (wider.kind !== 'error') {
+          process.stderr.write(
+            `  (a session matched in the unrelated-repo pool; add --all to include it: ${wider.candidate.path})\n`
+          );
+        }
+      }
+      process.stderr.write(`  Use \`relay list ${target}\` to see candidates.\n`);
+      return null;
+    }
+    candidate = res.candidate;
+    debug(opts, `--pick "${opts.pick}" resolved as ${res.kind} → ${candidate.path}`);
+  } else if (opts.last) {
+    candidate = [...all].sort((a, b) => b.mtimeMs - a.mtimeMs)[0]!;
+    debug(opts, `--last → ${candidate.path}`);
+  } else {
+    candidate = all[0]!;
+  }
+
+  debug(opts, `picked ${sourceAgent} session: ${candidate.path} (score=${candidate.score.toFixed(1)})`);
+  debug(opts, `reasons: ${candidate.reasons.join(' | ')}`);
+
+  return { candidate, all, sourceAgent, git };
+}
+
+async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' | 'preview'): Promise<number> {
+  const picked = await pickSourceSession(target, opts);
+  if (!picked) return 1;
+  const { candidate, sourceAgent, git } = picked;
+
+  if (sourceAgent === 'codex') {
+    const session = await parseCodexSession(candidate.path);
     debug(opts, `parsed ${session.parsedLines} events, skipped ${session.skippedLines} malformed lines`);
-
     const diff = opts.withDiff && git.inRepo ? getDiff(git.root, 6000) : null;
-
     const handoff = renderHandoff({
       sourceAgent,
       targetAgent: target,
@@ -203,35 +321,13 @@ async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' 
       diff,
       options: opts,
     });
-
     return finishHandoff(target, handoff.text, opts, mode);
   } else {
-    // sourceAgent === 'claude'
-    if (!existsSync(CLAUDE_PROJECTS_DIR)) {
-      process.stderr.write(
-        `codex-claude-relay: no Claude Code projects directory found at ${CLAUDE_PROJECTS_DIR}.\n` +
-          `  Run Claude Code at least once to generate transcripts, or check ~/.claude/projects.\n`
-      );
-      return 1;
-    }
-    const pick = await pickClaudeSession(git, opts.last);
-    if (!pick) {
-      process.stderr.write(
-        `codex-claude-relay: no Claude Code session JSONLs found under ${CLAUDE_PROJECTS_DIR}.\n`
-      );
-      return 1;
-    }
-    debug(opts, `picked claude session: ${pick.path} (score=${pick.score.toFixed(1)})`);
-    debug(opts, `reasons: ${pick.reasons.join(' | ')}`);
-
-    const session = await parseClaudeSession(pick.path);
+    const session = await parseClaudeSession(candidate.path);
     debug(opts, `parsed ${session.parsedLines} events, skipped ${session.skippedLines} malformed lines`);
-
     const mem = await readClaudeMemory(git);
     debug(opts, `claude memory: exists=${mem.exists} bytes=${mem.summary.length}`);
-
     const diff = opts.withDiff && git.inRepo ? getDiff(git.root, 6000) : null;
-
     const handoff = renderHandoff({
       sourceAgent,
       targetAgent: target,
@@ -241,7 +337,6 @@ async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' 
       diff,
       options: opts,
     });
-
     return finishHandoff(target, handoff.text, opts, mode);
   }
 }
@@ -273,6 +368,146 @@ async function finishHandoff(
   process.stderr.write(`codex-claude-relay: launching \`${target}\` with handoff (${prompt.length} chars)\n`);
   const res = await launchAgentAsync({ agent: target, prompt });
   return res.code;
+}
+
+function padR(s: string, width: number): string {
+  if (s.length >= width) return s;
+  return s + ' '.repeat(width - s.length);
+}
+
+function padL(s: string, width: number): string {
+  if (s.length >= width) return s;
+  return ' '.repeat(width - s.length) + s;
+}
+
+async function runList(target: AgentName, opts: RelayOptions): Promise<number> {
+  // `list <target>` means "show me sessions of the OTHER agent that I could hand off to <target>".
+  // e.g. `relay list codex` → show Claude sessions (the source) that we'd hand off TO Codex.
+  const sourceAgent: AgentName = target === 'claude' ? 'codex' : 'claude';
+  const git = detectGitContext(process.cwd());
+  if (!git.inRepo) {
+    process.stderr.write(
+      `codex-claude-relay: warning — current directory is not a git repo. Falling back to cwd: ${git.root}\n`
+    );
+  }
+
+  let discovered: SessionCandidate[];
+  if (sourceAgent === 'codex') {
+    discovered = existsSync(CODEX_SESSIONS_DIR) ? await discoverCodexSessions(git) : [];
+  } else {
+    discovered = existsSync(CLAUDE_PROJECTS_DIR) ? await discoverClaudeSessions(git) : [];
+  }
+
+  // Default: hide score-0 sessions (those swept in by the broad fallback scan
+  // but with no cwd match and aged out of the recency window — usually noise).
+  // `--all` shows everything ranked.
+  const relevant = opts.all ? discovered : discovered.filter((c) => c.score > 0);
+
+  const sourceLabel = sourceAgent === 'codex' ? 'Codex CLI' : 'Claude Code';
+  const header = `codex-claude-relay v${VERSION} — ${sourceLabel} sessions for ${git.root}`;
+  process.stdout.write(header + '\n');
+  process.stdout.write('-'.repeat(Math.min(header.length, 100)) + '\n');
+
+  if (discovered.length === 0) {
+    process.stdout.write(`\n  (no ${sourceLabel} sessions found)\n`);
+    return 0;
+  }
+  if (relevant.length === 0) {
+    process.stdout.write(
+      `\n  No ${sourceLabel} sessions are clearly relevant to this repo` +
+        ` (${discovered.length} found on disk, all score 0).\n` +
+        `  Pass --all to include them, or check you're \`cd\`-ed into the right repo.\n`
+    );
+    return 0;
+  }
+
+  const LIMIT = 10;
+  const top = relevant.slice(0, LIMIT);
+
+  // Build rows in parallel — peeking is mostly IO-bound.
+  const rows = await Promise.all(
+    top.map(async (c, i) => {
+      const id =
+        sourceAgent === 'codex' ? codexSessionId(c.path) : claudeSessionId(c.path);
+      const shortId = id.length > 13 ? id.slice(0, 12) + '…' : id;
+      const preview =
+        sourceAgent === 'codex'
+          ? await peekCodexOriginalTask(c.path, 80)
+          : await peekClaudeOriginalTask(c.path, 80);
+      return {
+        idx: i + 1,
+        score: c.score.toFixed(0),
+        age: relativeAge(c.mtimeMs),
+        shortId,
+        preview,
+      };
+    })
+  );
+
+  // Column widths.
+  const wIdx = Math.max(2, ...rows.map((r) => String(r.idx).length));
+  const wScore = Math.max(5, ...rows.map((r) => r.score.length));
+  const wAge = Math.max(6, ...rows.map((r) => r.age.length));
+  const wId = Math.max(13, ...rows.map((r) => r.shortId.length));
+
+  process.stdout.write(
+    '\n  ' +
+      padL('#', wIdx) +
+      '  ' +
+      padL('SCORE', wScore) +
+      '  ' +
+      padR('AGE', wAge) +
+      '  ' +
+      padR('SESSION', wId) +
+      '  ' +
+      'ORIGINAL TASK\n'
+  );
+  for (const r of rows) {
+    process.stdout.write(
+      '  ' +
+        padL(String(r.idx), wIdx) +
+        '  ' +
+        padL(r.score, wScore) +
+        '  ' +
+        padR(r.age, wAge) +
+        '  ' +
+        padR(r.shortId, wId) +
+        '  ' +
+        r.preview +
+        '\n'
+    );
+  }
+
+  if (relevant.length > LIMIT) {
+    process.stdout.write(
+      `\n  (${relevant.length - LIMIT} more relevant candidates not shown)\n`
+    );
+  }
+  if (!opts.all && discovered.length > relevant.length) {
+    process.stdout.write(
+      `  (${discovered.length - relevant.length} sessions from unrelated repos hidden; pass --all to see them)\n`
+    );
+  }
+
+  // Helpful footer.
+  process.stdout.write(
+    `\nPick one when launching the target agent:\n` +
+      `  relay ${target} --pick <#|id|path>\n` +
+      `Examples:\n` +
+      `  relay ${target} --pick 1\n` +
+      `  relay ${target} --pick ${rows[0]?.shortId.replace('…', '') ?? '<id>'}\n` +
+      `  relay preview ${target} --pick 2\n`
+  );
+
+  if (opts.debug) {
+    process.stderr.write('\n[relay] full scoring reasons:\n');
+    for (let i = 0; i < top.length; i++) {
+      const c = top[i]!;
+      process.stderr.write(`[relay]   #${i + 1}: ${c.reasons.join(' | ')}\n`);
+    }
+  }
+
+  return 0;
 }
 
 async function runInspect(opts: RelayOptions): Promise<number> {
@@ -347,6 +582,12 @@ async function main(): Promise<number> {
         return 2;
       }
       return runHandoff(parsed.target, parsed.options, 'preview');
+    case 'list':
+      if (!parsed.target) {
+        process.stderr.write(`codex-claude-relay: missing target for list\n`);
+        return 2;
+      }
+      return runList(parsed.target, parsed.options);
     case 'claude':
     case 'codex':
       return runHandoff(parsed.cmd, parsed.options, 'launch');

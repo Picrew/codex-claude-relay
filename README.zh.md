@@ -166,12 +166,19 @@ which claude codex
 | -------------------------- | --------------------------------------------------------------------- |
 | `relay claude`             | 从最相关的 Codex session 生成 handoff，启动 `claude`                  |
 | `relay codex`              | 从最相关的 Claude session 生成 handoff，启动 `codex`                  |
+| `relay list <target>`      | 列出指定方向上候选的源 session                                        |
 | `relay preview <target>`   | 只打印 handoff，不启动任何东西                                        |
 | `relay inspect`            | 显示发现到的 session、打分与原因                                      |
 
 ### 选项
 
 ```
+--pick SELECTOR  显式选择源 session，三种识别方式自动判断：
+                   - 1-based 索引（来自 `relay list`）   例：--pick 2
+                   - session id 或 id 前缀                例：--pick ab11e518
+                   - 路径或路径子串（含 `/`）             例：--pick rollout-2026-05-19
+--all            `relay list` 中显示无关 repo 的 session
+                 （默认只显示对当前 repo 分数 > 0 的）
 --last           直接用最新 mtime 的 session，跳过 cwd 排序
                  （当 cwd 匹配不上时有用）
 --with-diff      把当前 `git diff HEAD` 拼到 handoff 里
@@ -180,6 +187,39 @@ which claude codex
 --no-redact      关闭密钥脱敏（默认开启）
 --debug          stderr 输出详细发现 / 解析信息
 ```
+
+### 在多个 session 之间挑选
+
+同一个 repo 你通常会有**多个**过往的 Claude 或 Codex 会话，每个聊的事不一样。切到另一个 agent 的时候它得知道接哪一段。
+
+默认 `relay codex` 自动挑当前 repo 分数最高的那个（cwd 命中 + 新鲜度）。如果选错了 —— 显式指定：
+
+```bash
+relay list codex                # 列出所有相关的 Claude session，带编号
+```
+
+```
+codex-claude-relay v0.1.0 — Claude Code sessions for /Users/alice/work/my-project
+---------------------------------------------------------------------------------
+
+   #  SCORE  AGE      SESSION        ORIGINAL TASK
+   1    130  1h ago   ab11e518-27f…  Add rate limiting to the /api/upload endpoint
+   2     95  8h ago   fda29ad7-506…  Fix the CI build failing on macOS only
+   3     50  1d ago   8c3f1d2e-123…  Investigate slow tests in src/auth/
+
+Pick one when launching the target agent:
+  relay codex --pick <#|id|path>
+```
+
+然后挑你要的那个 handoff：
+
+```bash
+relay codex --pick 2                       # 按行号
+relay codex --pick fda29ad7                # 按 session id（或 id 前缀）
+relay codex --pick rollout-2026-05-19      # 按路径子串（必须含 `/`）
+```
+
+同样的 `--pick` 在 `relay preview <target>` 上也能用，先 preview 看哪个对再启动。
 
 ## 完整 Usage 教程
 

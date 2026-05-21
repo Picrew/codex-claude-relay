@@ -98,6 +98,20 @@ export interface RelayOptions {
   noRedact: boolean;
   /** Print verbose info about discovery & parsing. */
   debug: boolean;
+  /**
+   * Explicit session selector. If null, use auto-pick (ranking-based).
+   * Polymorphic — see resolveSelector():
+   *   - all digits     → 1-based index into the ranked candidate list
+   *   - contains '/'   → path or path-substring match
+   *   - otherwise      → session UUID prefix match (matches against basename)
+   */
+  pick: string | null;
+  /**
+   * In `relay list`, include score-0 candidates (sessions from unrelated repos
+   * that the broad scan swept in). Default: only show candidates with score > 0
+   * (i.e. sessions actually relevant to the current repo).
+   */
+  all: boolean;
 }
 
 export const DEFAULT_OPTIONS: RelayOptions = {
@@ -107,4 +121,24 @@ export const DEFAULT_OPTIONS: RelayOptions = {
   dryRun: false,
   noRedact: false,
   debug: false,
+  pick: null,
+  all: false,
 };
+
+/** Compact info for the `relay list` table — one row per candidate. */
+export interface SessionListing {
+  /** 1-based rank in the list (highest score first). */
+  index: number;
+  /** Short id (8-char UUID prefix), suitable for `--pick`. */
+  shortId: string;
+  /** Absolute path to the JSONL transcript. */
+  path: string;
+  /** mtime in epoch ms. */
+  mtimeMs: number;
+  /** Ranking score from the discovery step. */
+  score: number;
+  /** Brief first-user-message preview, capped to ~80 chars. */
+  taskPreview: string;
+  /** Top scoring reason for the row (debug hint, kept short). */
+  topReason: string;
+}

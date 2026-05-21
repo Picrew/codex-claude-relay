@@ -9,6 +9,8 @@ export {
   discoverCodexSessions,
   pickCodexSession,
   parseCodexSession,
+  codexSessionId,
+  peekCodexOriginalTask,
 } from './providers/codex.js';
 export {
   CLAUDE_PROJECTS_DIR,
@@ -17,7 +19,10 @@ export {
   parseClaudeSession,
   readClaudeMemory,
   encodeProjectDir,
+  claudeSessionId,
+  peekClaudeOriginalTask,
 } from './providers/claude.js';
 export { renderHandoff } from './summarize.js';
 export { redact } from './redact.js';
 export { launchAgentAsync, hasBinary } from './launch.js';
+export { resolveSelector, relativeAge } from './select.js';

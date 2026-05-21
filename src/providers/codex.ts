@@ -1,8 +1,8 @@
 import { readdir, stat } from 'node:fs/promises';
 import { existsSync, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, sep } from 'node:path';
-import { parseJsonl, peekJsonl, clip } from '../parse/jsonl.js';
+import { basename, join, sep } from 'node:path';
+import { findInJsonl, parseJsonl, peekJsonl, clip } from '../parse/jsonl.js';
 import type {
   GitContext,
   ParsedSession,
@@ -113,6 +113,58 @@ export async function pickCodexSession(
     return [...all].sort((a, b) => b.mtimeMs - a.mtimeMs)[0]!;
   }
   return all[0]!;
+}
+
+/**
+ * Extract the UUID portion of a Codex rollout filename.
+ *   rollout-2026-05-19T14-10-15-019e3edb-3adf-7d21-a33c-484bf81ac19c.jsonl
+ *                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ * Codex IDs are RFC 4122-like with 5 dash-separated segments, so the
+ * trailing 5 segments of the basename give us the id.
+ */
+export function codexSessionId(path: string): string {
+  const base = basename(path, '.jsonl');
+  const parts = base.split('-');
+  // Defensive: file naming may evolve, fall back to whole basename.
+  if (parts.length < 5) return base;
+  return parts.slice(-5).join('-');
+}
+
+/**
+ * Cheaply peek the first substantial user message in a Codex rollout, capped
+ * to ~`n` chars. Streams and bails early; safe even for huge rollouts.
+ */
+export async function peekCodexOriginalTask(
+  path: string,
+  n: number = 80
+): Promise<string> {
+  const text = await findInJsonl<string>(
+    path,
+    (obj) => {
+      if (!obj || typeof obj !== 'object') return null;
+      const rec = obj as Record<string, unknown>;
+      if (rec.type !== 'response_item') return null;
+      const payload = rec.payload as Record<string, unknown> | undefined;
+      if (!payload || payload.type !== 'message') return null;
+      if (payload.role !== 'user') return null;
+      const content = payload.content;
+      if (!Array.isArray(content)) return null;
+      let out = '';
+      for (const c of content) {
+        if (!c || typeof c !== 'object') continue;
+        const t = (c as Record<string, unknown>).text;
+        if (typeof t === 'string') out += t;
+      }
+      out = out.trim();
+      if (out.length < 12) return null;
+      // Skip environment_context noise.
+      if (/^<environment_context>/.test(out)) return null;
+      return out;
+    },
+    400 // most rollouts have the first user message well within the first 400 lines
+  );
+  if (!text) return '(no user message found)';
+  return clip(text.replace(/\s+/g, ' '), n);
 }
 
 /* ----------------------------- parsing --------------------------------- */
