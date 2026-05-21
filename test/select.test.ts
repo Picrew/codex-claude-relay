@@ -1,118 +1,98 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveSelector, relativeAge } from '../src/select.ts';
+import { resolveSelector, matchesGrep, relativeAge } from '../src/select.ts';
 import type { SessionCandidate } from '../src/types.ts';
 
-function cand(path: string, score: number, mtimeMs = 0): SessionCandidate {
-  return {
-    path,
-    score,
-    mtimeMs,
-    recordedCwd: null,
-    reasons: [],
-  };
+function cand(path: string, mtimeMs = 0, relevantToRepo = true): SessionCandidate {
+  return { path, mtimeMs, recordedCwd: null, relevantToRepo };
 }
 
 const sample: SessionCandidate[] = [
-  cand('/u/x/.claude/projects/-Users-x-foo/ab11e518-27f5-4b38-ae8d-3ab55384b7dc.jsonl', 130),
-  cand('/u/x/.claude/projects/-Users-x-foo/fda29ad7-506f-4670-8772-f05a7de4e695.jsonl', 95),
-  cand('/u/x/.codex/sessions/2026/05/19/rollout-2026-05-19T14-10-15-019e3edb-3adf-7d21-a33c-484bf81ac19c.jsonl', 80),
+  cand('/u/x/.claude/projects/-Users-x-foo/ab11e518-27f5-4b38-ae8d-3ab55384b7dc.jsonl'),
+  cand('/u/x/.claude/projects/-Users-x-foo/fda29ad7-506f-4670-8772-f05a7de4e695.jsonl'),
+  cand('/u/x/.codex/sessions/2026/05/19/rollout-2026-05-19T14-10-15-019e3edb-3adf-7d21-a33c-484bf81ac19c.jsonl'),
 ];
 
-test('resolveSelector: index picks the right row', () => {
-  const r = resolveSelector('1', sample);
-  assert.equal(r.kind, 'index');
-  assert.ok('candidate' in r);
-  if ('candidate' in r) {
-    assert.equal(r.candidate.score, 130);
-  }
-});
-
-test('resolveSelector: index out of range falls through to id-lookup then errors', () => {
-  // "99" is digits, doesn't match a candidate id either → final error.
-  const r = resolveSelector('99', sample);
-  assert.equal(r.kind, 'error');
-});
-
-test('resolveSelector: digit-only string that matches an id is treated as id', () => {
-  // 019e3edb starts with "019e", but the trailing parts of the path include
-  // "484bf81ac19c" — and Codex IDs have digit-runs in them. Use a deliberately
-  // digit-heavy id prefix that doesn't fit an index.
-  const digitsOnly: SessionCandidate[] = [
-    {
-      path: '/sessions/123456789abc.jsonl',
-      score: 1,
-      mtimeMs: 0,
-      recordedCwd: null,
-      reasons: [],
-    },
-  ];
-  const r = resolveSelector('123456789', digitsOnly);
-  assert.equal(r.kind, 'id');
-});
-
-test('resolveSelector: index 0 errors (1-based)', () => {
-  // 0 isn't a valid 1-based index, and "0" probably isn't a session id either.
-  const r = resolveSelector('0', sample);
-  assert.equal(r.kind, 'error');
-});
+/* ----------------- resolveSelector (id-prefix only) ------------------- */
 
 test('resolveSelector: id prefix matches Claude session', () => {
   const r = resolveSelector('ab11e518', sample);
-  assert.equal(r.kind, 'id');
+  assert.ok('candidate' in r);
   if ('candidate' in r) {
     assert.ok(r.candidate.path.includes('ab11e518'));
   }
 });
 
-test('resolveSelector: id prefix matches Codex session by tail UUID', () => {
+test('resolveSelector: id prefix matches Codex session by trailing UUID', () => {
   const r = resolveSelector('019e3edb', sample);
-  assert.equal(r.kind, 'id');
+  assert.ok('candidate' in r);
   if ('candidate' in r) {
     assert.ok(r.candidate.path.includes('019e3edb'));
   }
 });
 
-test('resolveSelector: ambiguous id prefix errors with matches', () => {
-  // Both Claude session IDs share no common prefix in this set; build a colliding case.
+test('resolveSelector: digit-only id prefix still works', () => {
+  // The user specifically asked that "32533776"-style prefixes work.
+  const digits: SessionCandidate[] = [cand('/p/32533776-abc-def.jsonl')];
+  const r = resolveSelector('32533776', digits);
+  assert.ok('candidate' in r);
+});
+
+test('resolveSelector: no match returns error', () => {
+  const r = resolveSelector('zzz9999', sample);
+  assert.ok('kind' in r && r.kind === 'error');
+});
+
+test('resolveSelector: ambiguous prefix returns error with matched list', () => {
   const colliding: SessionCandidate[] = [
-    cand('/p/aaa-1.jsonl', 1),
-    cand('/p/aaa-2.jsonl', 2),
+    cand('/p/aaa-111.jsonl'),
+    cand('/p/aaa-222.jsonl'),
   ];
   const r = resolveSelector('aaa', colliding);
-  assert.equal(r.kind, 'error');
-  if ('matched' in r && r.matched) {
-    assert.equal(r.matched.length, 2);
+  assert.ok('kind' in r && r.kind === 'error');
+  if ('matched' in r) {
+    assert.equal(r.matched?.length, 2);
   }
-});
-
-test('resolveSelector: id with no match errors', () => {
-  const r = resolveSelector('zzz9999', sample);
-  assert.equal(r.kind, 'error');
-});
-
-test('resolveSelector: path substring with / matches unique session', () => {
-  const r = resolveSelector('2026/05/19', sample);
-  assert.equal(r.kind, 'path');
-  if ('candidate' in r) {
-    assert.ok(r.candidate.path.includes('2026/05/19'));
-  }
-});
-
-test('resolveSelector: path substring with multiple matches errors', () => {
-  const r = resolveSelector('-Users-x-foo/', sample);
-  assert.equal(r.kind, 'error');
 });
 
 test('resolveSelector: empty selector errors', () => {
   const r = resolveSelector('', sample);
-  assert.equal(r.kind, 'error');
+  assert.ok('kind' in r && r.kind === 'error');
 });
 
 test('resolveSelector: whitespace-only selector errors', () => {
   const r = resolveSelector('   ', sample);
-  assert.equal(r.kind, 'error');
+  assert.ok('kind' in r && r.kind === 'error');
 });
+
+test('resolveSelector: longer prefix disambiguates', () => {
+  const colliding: SessionCandidate[] = [
+    cand('/p/aaa-111.jsonl'),
+    cand('/p/aaa-222.jsonl'),
+  ];
+  const r = resolveSelector('aaa-2', colliding);
+  assert.ok('candidate' in r);
+  if ('candidate' in r) {
+    assert.ok(r.candidate.path.includes('aaa-222'));
+  }
+});
+
+/* ----------------------------- matchesGrep ---------------------------- */
+
+test('matchesGrep: case-insensitive substring', () => {
+  assert.ok(matchesGrep('Add Rate Limiting to /api/upload', 'rate limit'));
+  assert.ok(matchesGrep('FIX BUILD', 'build'));
+});
+
+test('matchesGrep: empty needle matches everything', () => {
+  assert.ok(matchesGrep('anything', ''));
+});
+
+test('matchesGrep: no match returns false', () => {
+  assert.equal(matchesGrep('Add rate limiting', 'auth'), false);
+});
+
+/* ----------------------------- relativeAge ---------------------------- */
 
 test('relativeAge: seconds', () => {
   const now = Date.now();
@@ -134,7 +114,7 @@ test('relativeAge: days', () => {
   assert.match(relativeAge(now - 5 * 86_400_000, now), /^\d+d ago$/);
 });
 
-test('relativeAge: future or zero returns 0s', () => {
+test('relativeAge: future timestamps clamp to 0s', () => {
   const now = Date.now();
   assert.match(relativeAge(now + 5_000, now), /^0s ago$/);
 });

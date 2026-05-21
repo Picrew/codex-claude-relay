@@ -64,28 +64,22 @@ async function detectClaudeCwd(path: string): Promise<string | null> {
 }
 
 /**
- * Discover Claude session JSONL files and rank them.
+ * Discover Claude session JSONL files. Returns all candidates on disk, sorted
+ * by mtime descending, each tagged with `relevantToRepo`.
  *
- * Strategy:
- *   1. Fast path: try `~/.claude/projects/<encoded(root)>/*.jsonl` first; those
- *      get a big score boost.
- *   2. Fallback: scan the full `projects/` tree (one level deep is typical),
- *      detect cwd from each transcript, and rank.
+ * We use the fast path (`~/.claude/projects/<encoded(root)>/`) first to mark
+ * sessions clearly tied to this repo even when their recorded cwd is missing,
+ * then broaden the scan to catch anything not in the canonical location.
  */
 export async function discoverClaudeSessions(git: GitContext): Promise<SessionCandidate[]> {
   if (!existsSync(CLAUDE_PROJECTS_DIR)) return [];
 
   const encoded = encodeProjectDir(git.root);
   const fastPath = join(CLAUDE_PROJECTS_DIR, encoded);
+  const fastMatch = existsSync(fastPath);
 
   let paths: string[] = [];
-  const fastMatch = existsSync(fastPath);
-  if (fastMatch) {
-    paths = await collectJsonl(fastPath, 0);
-  }
-
-  // Always also do a broad scan so the user can still find sessions even if
-  // the project directory encoding has changed.
+  if (fastMatch) paths = await collectJsonl(fastPath, 0);
   const broad = await collectJsonl(CLAUDE_PROJECTS_DIR, 0);
   for (const p of broad) {
     if (!paths.includes(p)) paths.push(p);
@@ -101,56 +95,33 @@ export async function discoverClaudeSessions(git: GitContext): Promise<SessionCa
       continue;
     }
 
-    let recordedCwd = await detectClaudeCwd(p);
-    const reasons: string[] = [];
-    let score = 0;
-
-    if (fastMatch && p.startsWith(fastPath + sep)) {
-      score += 40;
-      reasons.push('inside encoded project dir');
-    }
-
-    if (recordedCwd) {
-      if (recordedCwd === git.root) {
-        score += 60;
-        reasons.push('cwd matches git root exactly');
-      } else if (git.inRepo && recordedCwd.startsWith(git.root + sep)) {
-        score += 50;
-        reasons.push('cwd inside git root');
-      } else if (recordedCwd.includes(git.repoName)) {
-        score += 20;
-        reasons.push(`cwd path mentions repo name "${git.repoName}"`);
-      }
-    }
-
-    const ageDays = (Date.now() - mtimeMs) / (24 * 3600 * 1000);
-    const recency = Math.max(0, 30 * (1 - ageDays / 14));
-    score += recency;
-    reasons.push(`recency +${recency.toFixed(1)} (age ${ageDays.toFixed(1)}d)`);
+    const recordedCwd = await detectClaudeCwd(p);
+    const inEncodedDir = fastMatch && p.startsWith(fastPath + sep);
+    const cwdMatches =
+      recordedCwd != null &&
+      (recordedCwd === git.root ||
+        (git.inRepo && recordedCwd.startsWith(git.root + sep)));
+    const relevantToRepo = inEncodedDir || cwdMatches;
 
     candidates.push({
       path: p,
       mtimeMs,
       recordedCwd,
-      score,
-      reasons,
+      relevantToRepo,
     });
   }
 
-  candidates.sort((a, b) => b.score - a.score || b.mtimeMs - a.mtimeMs);
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return candidates;
 }
 
+/** Pick the most recent Claude session relevant to the current repo. */
 export async function pickClaudeSession(
-  git: GitContext,
-  forceLast: boolean
+  git: GitContext
 ): Promise<SessionCandidate | null> {
   const all = await discoverClaudeSessions(git);
-  if (all.length === 0) return null;
-  if (forceLast) {
-    return [...all].sort((a, b) => b.mtimeMs - a.mtimeMs)[0]!;
-  }
-  return all[0]!;
+  const relevant = all.find((c) => c.relevantToRepo);
+  return relevant ?? null;
 }
 
 /**

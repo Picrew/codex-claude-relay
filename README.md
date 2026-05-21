@@ -90,7 +90,7 @@ Verify:
 
 ```bash
 which relay        # should print a path under your npm global prefix
-relay --version    # should print 0.1.1
+relay --version    # should print 0.1.2
 relay inspect      # should list discovered sessions
 ```
 
@@ -163,64 +163,80 @@ If either is missing, install it from its vendor — `relay preview`, `relay ins
 
 ## Commands
 
-| Command                  | Effect                                                                |
-| ------------------------ | --------------------------------------------------------------------- |
-| `relay claude`           | Build handoff from latest relevant Codex session → launch `claude`    |
-| `relay codex`            | Build handoff from latest relevant Claude session → launch `codex`    |
-| `relay list <target>`    | List candidate source sessions for the chosen target direction        |
-| `relay preview <target>` | Print the handoff that would be sent; don't launch                    |
-| `relay inspect`          | Show what would be picked, with scores and reasons                    |
+| Command                  | Effect                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------- |
+| `relay claude`           | Build handoff from most recent Codex session **for this repo** → launch `claude`      |
+| `relay codex`            | Build handoff from most recent Claude session **for this repo** → launch `codex`      |
+| `relay list <target>`    | List candidate source sessions for the chosen target direction (this repo by default) |
+| `relay preview <target>` | Print the handoff that would be sent; don't launch                                    |
+| `relay inspect`          | Show counts, the most-recent session for this repo, and which binaries are on PATH    |
 
 ### Flags
 
 ```
---pick SELECTOR  Choose a specific source session instead of auto-pick:
-                   - a 1-based index from `relay list`     (e.g. --pick 2)
-                   - a session id or id prefix             (e.g. --pick ab11e518)
-                   - a path or path substring (with `/`)   (e.g. --pick rollout-2026-05-19)
---all            In `relay list`, include sessions from unrelated repos
-                 (default: only show those scored > 0 for this repo).
---last           Use the most recently modified session, skipping the
-                 cwd-based ranking. Useful when cwd doesn't match.
---with-diff      Append the current `git diff HEAD` to the handoff.
---max-chars N    Cap the rendered handoff length (default 12000).
---dry-run        Build the handoff and print it; do not launch.
---no-redact      Disable secret redaction. Default is ON.
---debug          Verbose discovery / parsing info on stderr.
+Picking which session to hand off (default: most recent for this repo):
+
+  --pick ID-PREFIX  A substring of the session UUID, e.g. --pick ab11e518.
+                    Must match exactly one session (use a longer prefix if not).
+  --grep TEXT       Case-insensitive substring filter over each session's original-task
+                    preview. On `list` it narrows the table; on `claude` / `codex` it
+                    must match exactly one session.
+
+Other:
+
+  --all             Include sessions whose recorded cwd is outside this repo.
+                    Default `list` shows only sessions for the current repo.
+  --with-diff       Append the current `git diff HEAD` to the handoff.
+  --max-chars N     Cap the rendered handoff length (default 12000).
+  --dry-run         Build the handoff and print it; do not launch.
+  --no-redact       Disable secret redaction. Default is ON.
+  --debug           Verbose discovery info on stderr.
 ```
 
 ### Picking among multiple sessions
 
-For the same repo you usually have *several* past Claude or Codex sessions, each on a different topic. The handoff target needs to know which one to continue from.
-
-By default `relay codex` picks the highest-scored session for the current repo (cwd match + recency). If that's not the one you want — pick explicitly:
+For the same repo you usually have *several* past Claude or Codex sessions, each on a different topic. By default `relay codex` picks the **most recent** Claude session whose recorded `cwd` was inside this repo. If that's not what you want, use `list` to see what's available and pick explicitly.
 
 ```bash
-relay list codex                # see all relevant Claude sessions, numbered
+relay list codex
 ```
 
 ```
-codex-claude-relay v0.1.1 — Claude Code sessions for /Users/alice/work/my-project
+codex-claude-relay v0.1.2 — Claude Code sessions for /Users/alice/work/my-project
 ---------------------------------------------------------------------------------
 
-   #  SCORE  AGE      SESSION        ORIGINAL TASK
-   1    130  1h ago   ab11e518-27f…  Add rate limiting to the /api/upload endpoint
-   2     95  8h ago   fda29ad7-506…  Fix the CI build failing on macOS only
-   3     50  1d ago   8c3f1d2e-123…  Investigate slow tests in src/auth/
+  AGE      SESSION        ORIGINAL TASK
+  1h ago   ab11e518-27f…  Add rate limiting to the /api/upload endpoint
+  8h ago   fda29ad7-506…  Fix the CI build failing on macOS only
+  1d ago   8c3f1d2e-123…  Investigate slow tests in src/auth/
 
-Pick one when launching the target agent:
-  relay codex --pick <#|id|path>
+Pick one: relay codex --pick <id-or-prefix>
 ```
 
-Then hand off the one you want:
+Then hand off the one you want, by **session-id prefix**:
 
 ```bash
-relay codex --pick 2            # by row index
-relay codex --pick fda29ad7     # by session id (or id prefix)
-relay codex --pick rollout-2026-05-19  # by path substring (must contain a /)
+relay codex --pick fda29ad7              # any unique substring of the session UUID
+relay codex --pick 32533776              # all-digit prefixes are fine too
 ```
 
-The same `--pick` works on `relay preview <target>` for inspecting any session's handoff without launching.
+Or by **content** — filter against each session's original-task text (case-insensitive):
+
+```bash
+relay codex --grep "rate limit"          # uses the only session whose task mentions "rate limit"
+relay list codex --grep "build"          # narrows the list to those mentioning "build"
+```
+
+`--pick` and `--grep` both work with `relay preview <target>` for inspecting any session's handoff without launching.
+
+If `--pick` is ambiguous you'll get a list of matches; lengthen the prefix. If `--grep` is ambiguous you'll get a list too; pick one of the matches by id.
+
+To search beyond this repo (sessions recorded in other directories), pass `--all`:
+
+```bash
+relay list codex --all
+relay list codex --grep "auth" --all
+```
 
 ## Walkthrough
 
@@ -259,7 +275,7 @@ Scroll through and verify:
 
 If the original task is truncated and you want more of it, raise `--max-chars` (e.g. `--max-chars 16000`).
 
-If `relay inspect` was already showing the right session at score ≥ 90, you can usually skip this step. Press `q` to exit `less`.
+If `relay inspect` already showed a "for this repo" count ≥ 1 and the most-recent path matches what you were just working on, you can usually skip this step. Press `q` to exit `less`.
 
 **Step 4 — Launch Codex with the handoff.**
 
@@ -310,10 +326,11 @@ cd /path/to/your/repo
 relay preview claude --max-chars 8000 | less
 ```
 
-If Codex worked in a worktree or under a subdir, the cwd recorded in the session might not match your current git root. `relay inspect` will show the score; if it's low (< 60), try `--last`:
+If Codex worked in a worktree or under a subdir, the cwd recorded in the session might not match your current git root. `relay inspect` will show how many sessions count as "for this repo". If it's 0, widen with `--all`:
 
 ```bash
-relay preview claude --last
+relay list claude --all
+relay claude --pick <id-prefix>          # then explicitly pick one
 ```
 
 **Step 4 — Launch.**
@@ -344,8 +361,9 @@ Both agents now have the same repo state plus the same prior context. Useful whe
 ### Useful flags in practice
 
 ```bash
-# Cwd doesn't match the recorded one (worktree, moved repo, symlink, etc.)
-relay codex --last
+# No session was recorded inside this exact repo (worktree, moved, symlink, etc.)
+relay list codex --all                    # see all candidates on disk
+relay codex --pick <id-prefix>            # then pick one explicitly
 
 # Receiving agent should see your uncommitted work too
 relay codex --with-diff
@@ -375,7 +393,7 @@ relay codex --no-redact
 ```
 $ cd ~/work/my-project
 $ relay inspect
-codex-claude-relay v0.1.1 inspect
+codex-claude-relay v0.1.2 inspect
 
 Git context:
   cwd:         /Users/alice/work/my-project
@@ -384,20 +402,18 @@ Git context:
   branch:      main
 
 Codex sessions (~/.codex/sessions):
-  dir exists:  true
-  count:       137
-  best:        ~/.codex/sessions/2026/05/14/rollout-2026-05-14T09-15-22-…jsonl
-               score=88.7  mtime=2026-05-14T01:22:08.142Z
-               cwd=/Users/alice/work/my-project
-               reasons: cwd matches git root exactly | recency +28.7 (age 0.4d)
+  dir exists:    true
+  total on disk: 137
+  for this repo: 12
+  most recent:   ~/.codex/sessions/2026/05/21/rollout-2026-05-21T09-15-22-…jsonl
+                 2026-05-21T01:22:08.142Z
 
 Claude Code sessions (~/.claude/projects):
-  dir exists:  true
-  count:       42
-  best:        ~/.claude/projects/-Users-alice-work-my-project/8c3f….jsonl
-               score=130.0  mtime=2026-05-19T14:10:01.000Z
-               cwd=/Users/alice/work/my-project
-               reasons: inside encoded project dir | cwd matches git root exactly | recency +30.0 (age 0.0d)
+  dir exists:    true
+  total on disk: 42
+  for this repo: 3
+  most recent:   ~/.claude/projects/-Users-alice-work-my-project/8c3f….jsonl
+                 2026-05-21T14:10:01.000Z
 
 Claude memory for this project:
   exists:      false
@@ -453,23 +469,21 @@ Safety notes for you, the receiving agent:
 - Prefer the live repository state over anything implied by this transcript.
 ```
 
-## Session discovery & ranking
+## Session discovery
 
-Both providers walk the canonical directory recursively, peek each file's metadata cheaply, then rank:
+Both providers walk their canonical directory recursively and peek each file's metadata cheaply. The result is a list of candidates **sorted by modification time, newest first**, each tagged with a single boolean: `relevantToRepo`.
 
-```
-score = cwd_match_signal  +  recency_decay
-```
+A session counts as "relevant to this repo" if any of the following holds:
 
-| Signal                                | Codex weight | Claude weight |
-| ------------------------------------- | :----------: | :-----------: |
-| Recorded cwd equals git root          | +60          | +60           |
-| Recorded cwd inside git root          | +50          | +50           |
-| Recorded cwd mentions repo name       | +25          | +20           |
-| Inside Claude's encoded project dir   | —            | +40           |
-| Recency: linear decay 0 → 14 days     | +0 … +30     | +0 … +30      |
+| Signal                                                                    | Codex | Claude |
+| ------------------------------------------------------------------------- | :---: | :----: |
+| Recorded `cwd` equals the current git root                                |  ✓    |   ✓    |
+| Recorded `cwd` is inside the current git root                             |  ✓    |   ✓    |
+| File lives in `~/.claude/projects/<encoded-current-git-root>/`            |  —    |   ✓    |
 
-Pass `--last` to skip ranking and force the most-recent-by-mtime file. Pass `--debug` to see the reasons string for the chosen candidate.
+That's it. No scoring, no fuzzy matches, no recency weighting. The "best" session for the current repo is just the most recent one whose `relevantToRepo` is true.
+
+Sessions outside this repo are still discovered and remembered — `--all` puts them in scope (for `list`, for `--grep`); `--pick <id-prefix>` always searches them regardless of `--all`.
 
 ## Native transcript formats
 
@@ -550,7 +564,7 @@ Pass `--no-redact` only when you trust the transcript.
 | ---------------------------------------------------- | ----------------------------------------------------------------------- |
 | Transcripts deleted or disabled                      | Nothing to read; `relay inspect` reports `count=0`.                     |
 | Two repos with the same basename                     | Cwd-exact-match (+60) still wins; otherwise check `--debug`.            |
-| Same project across multiple Claude sessions         | Highest cwd-score + most recent wins; pin with `--last` if you need to. |
+| Same project across multiple Claude sessions         | Most recent for this repo wins; pin a specific one with `--pick <id-prefix>` or `--grep "<text>"`. |
 | Codex/Claude transcript schema changes upstream      | Parser skips malformed lines and reports the count in `--debug`.        |
 | Cross-machine handoff                                | Not supported. Transcripts are local-only.                              |
 | Huge tool outputs                                    | Clipped to ~400 chars per event in the handoff.                         |

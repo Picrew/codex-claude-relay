@@ -25,4 +25,4 @@ export {
 export { renderHandoff } from './summarize.js';
 export { redact } from './redact.js';
 export { launchAgentAsync, hasBinary } from './launch.js';
-export { resolveSelector, relativeAge } from './select.js';
+export { resolveSelector, relativeAge, matchesGrep } from './select.js';

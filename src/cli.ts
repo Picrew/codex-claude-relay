@@ -20,18 +20,18 @@ import {
 } from './providers/claude.js';
 import { renderHandoff } from './summarize.js';
 import { launchAgentAsync, hasBinary } from './launch.js';
-import { resolveSelector, relativeAge } from './select.js';
+import { resolveSelector, relativeAge, matchesGrep } from './select.js';
 import { DEFAULT_OPTIONS } from './types.js';
 import type { AgentName, RelayOptions, SessionCandidate } from './types.js';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 
 const HELP = `codex-claude-relay v${VERSION} — stateless handoff between Codex CLI and Claude Code
 
 Usage:
   relay <target>            Launch the target agent with a handoff from the OTHER agent
   relay preview <target>    Print the handoff that would be sent (no launch)
-  relay list <target>       List candidate sessions you could hand off from
+  relay list <target>       List candidate source sessions for this repo
   relay inspect             Show discovery results without parsing or launching
   relay --help              Show this help
   relay --version           Show version
@@ -40,14 +40,17 @@ Targets:
   claude   Handoff Codex -> Claude Code (reads ~/.codex/sessions, launches \`claude\`)
   codex    Handoff Claude Code -> Codex (reads ~/.claude/projects, launches \`codex\`)
 
-Options:
-  --pick SELECTOR     Choose a specific source session. SELECTOR is one of:
-                        - a 1-based index from \`relay list\`           (e.g. --pick 2)
-                        - a session id or id prefix                      (e.g. --pick ab11e518)
-                        - a path or path substring (must contain a /)    (e.g. --pick rollout-2026-05-19)
-  --all               In \`relay list\`, include sessions from unrelated repos
-                      (default: only show those scored > 0 for this repo)
-  --last              Use the most recently modified session (skip repo-relevance ranking)
+Picking which session to hand off (default: most recent in this repo):
+
+  --pick ID-PREFIX    A substring of the session UUID, e.g. --pick ab11e518.
+                      Must match exactly one session (use a longer prefix if not).
+  --grep TEXT         Case-insensitive substring filter over each session's
+                      original-task preview. On \`list\` it narrows the table; on
+                      \`claude\`/\`codex\` it must match exactly one session.
+
+Other options:
+  --all               Include sessions whose recorded cwd is outside this repo
+                      (by default \`list\` shows only sessions for the current repo)
   --with-diff         Append \`git diff HEAD\` to the handoff
   --max-chars N       Cap the handoff size (default ${DEFAULT_OPTIONS.maxChars})
   --dry-run           Build & print the handoff, do not launch the target agent
@@ -55,10 +58,11 @@ Options:
   --debug             Verbose discovery / parsing info on stderr
 
 Examples:
-  relay claude
-  relay list codex                          # see what Claude sessions are available
-  relay codex --pick 2                      # use the 2nd from \`relay list codex\`
-  relay codex --pick ab11e518               # use a specific session by id prefix
+  relay claude                              # most recent Codex session for this repo
+  relay list codex                          # see candidate Claude sessions for this repo
+  relay list codex --grep "rate limit"      # narrow the list to those mentioning "rate limit"
+  relay codex --pick ab11e518               # hand off a specific session by id prefix
+  relay codex --grep "rate limit"           # ditto, by content match (must be unique)
   relay codex --with-diff
   relay preview claude --max-chars 6000
   relay inspect
@@ -89,7 +93,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       return { cmd, options, positional };
     }
     if (a === '--last') {
-      options.last = true;
+      // Backward-compat alias: in v0.1.1 this meant "skip ranking and use the
+      // most recent". v0.1.2 makes that the default, so it's a no-op now.
+      // Kept to avoid breaking old scripts.
       i += 1;
       continue;
     }
@@ -142,7 +148,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (a === '--pick') {
       const next = argv[i + 1];
       if (!next || next.startsWith('-')) {
-        process.stderr.write(`codex-claude-relay: --pick requires a selector (index | id-prefix | path)\n`);
+        process.stderr.write(`codex-claude-relay: --pick requires a session id (or id prefix, e.g. ab11e518)\n`);
         process.exit(2);
       }
       options.pick = next;
@@ -152,10 +158,25 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (a.startsWith('--pick=')) {
       const v = a.slice('--pick='.length);
       if (!v) {
-        process.stderr.write(`codex-claude-relay: --pick requires a selector\n`);
+        process.stderr.write(`codex-claude-relay: --pick requires a session id\n`);
         process.exit(2);
       }
       options.pick = v;
+      i += 1;
+      continue;
+    }
+    if (a === '--grep') {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        process.stderr.write(`codex-claude-relay: --grep requires a text argument\n`);
+        process.exit(2);
+      }
+      options.grep = next;
+      i += 2;
+      continue;
+    }
+    if (a.startsWith('--grep=')) {
+      options.grep = a.slice('--grep='.length);
       i += 1;
       continue;
     }
@@ -212,13 +233,18 @@ function debug(opts: RelayOptions, msg: string): void {
 
 /**
  * Resolve which source session to use. Returns null on hard error (already
- * reported to stderr by this function). Otherwise returns the chosen
- * candidate, the full ranked list (for debug), and the source agent.
+ * reported to stderr).
+ *
+ * Resolution priority:
+ *   1. --pick <id> → unique session whose UUID contains the substring
+ *   2. --grep <text> → unique session whose original-task preview contains the
+ *                       substring (case-insensitive)
+ *   3. (default) → most recent session whose recorded cwd is inside this repo
  */
 async function pickSourceSession(
   target: AgentName,
   opts: RelayOptions
-): Promise<{ candidate: SessionCandidate; all: SessionCandidate[]; sourceAgent: AgentName; git: ReturnType<typeof detectGitContext> } | null> {
+): Promise<{ candidate: SessionCandidate; sourceAgent: AgentName; git: ReturnType<typeof detectGitContext> } | null> {
   const git = detectGitContext(process.cwd());
   if (!git.inRepo) {
     process.stderr.write(
@@ -230,84 +256,115 @@ async function pickSourceSession(
   const sourceAgent: AgentName = target === 'claude' ? 'codex' : 'claude';
   debug(opts, `source agent: ${sourceAgent}, target agent: ${target}`);
 
+  // Discover everything; the providers return them sorted by mtime desc.
   let all: SessionCandidate[];
   if (sourceAgent === 'codex') {
     if (!existsSync(CODEX_SESSIONS_DIR)) {
       process.stderr.write(
         `codex-claude-relay: no Codex session directory found at ${CODEX_SESSIONS_DIR}.\n` +
-          `  Run Codex CLI at least once to generate transcripts, or check ~/.codex/sessions.\n`
+          `  Run Codex CLI at least once to generate transcripts.\n`
       );
       return null;
     }
     all = await discoverCodexSessions(git);
-    if (all.length === 0) {
-      process.stderr.write(`codex-claude-relay: no Codex rollout files found under ${CODEX_SESSIONS_DIR}.\n`);
-      return null;
-    }
   } else {
     if (!existsSync(CLAUDE_PROJECTS_DIR)) {
       process.stderr.write(
         `codex-claude-relay: no Claude Code projects directory found at ${CLAUDE_PROJECTS_DIR}.\n` +
-          `  Run Claude Code at least once to generate transcripts, or check ~/.claude/projects.\n`
+          `  Run Claude Code at least once to generate transcripts.\n`
       );
       return null;
     }
     all = await discoverClaudeSessions(git);
-    if (all.length === 0) {
-      process.stderr.write(
-        `codex-claude-relay: no Claude Code session JSONLs found under ${CLAUDE_PROJECTS_DIR}.\n`
-      );
-      return null;
-    }
   }
 
-  // Resolve --pick against the same filtered view the user sees in `relay list`.
-  // (Score-0 candidates are sessions swept in by the broad scan but unrelated
-  // to the current repo; --all keeps them in scope.)
-  const relevant = opts.all ? all : all.filter((c) => c.score > 0);
+  if (all.length === 0) {
+    process.stderr.write(`codex-claude-relay: no ${sourceAgent} sessions found on disk.\n`);
+    return null;
+  }
 
-  // Selection priority: --pick > --last > top-of-ranking.
-  let candidate: SessionCandidate;
+  if (opts.pick && opts.grep) {
+    process.stderr.write(`codex-claude-relay: pass either --pick or --grep, not both.\n`);
+    return null;
+  }
+
+  // --pick searches across ALL sessions, including ones from other repos
+  // (you explicitly typed the id, so you know what you want).
   if (opts.pick) {
-    const res = resolveSelector(opts.pick, relevant);
-    if (res.kind === 'error') {
+    const res = resolveSelector(opts.pick, all);
+    if ('kind' in res && res.kind === 'error') {
       process.stderr.write(`codex-claude-relay: --pick ${opts.pick}: ${res.message}\n`);
       if (res.matched && res.matched.length > 1) {
         for (const m of res.matched.slice(0, 5)) {
           process.stderr.write(`  - ${m.path}\n`);
         }
       }
-      // If filtering hid a match, hint at --all.
-      if (!opts.all) {
-        const wider = resolveSelector(opts.pick, all);
-        if (wider.kind !== 'error') {
-          process.stderr.write(
-            `  (a session matched in the unrelated-repo pool; add --all to include it: ${wider.candidate.path})\n`
-          );
-        }
-      }
       process.stderr.write(`  Use \`relay list ${target}\` to see candidates.\n`);
       return null;
     }
-    candidate = res.candidate;
-    debug(opts, `--pick "${opts.pick}" resolved as ${res.kind} → ${candidate.path}`);
-  } else if (opts.last) {
-    candidate = [...all].sort((a, b) => b.mtimeMs - a.mtimeMs)[0]!;
-    debug(opts, `--last → ${candidate.path}`);
-  } else {
-    candidate = all[0]!;
+    debug(opts, `--pick "${opts.pick}" → ${(res as { candidate: SessionCandidate }).candidate.path}`);
+    return { candidate: (res as { candidate: SessionCandidate }).candidate, sourceAgent, git };
   }
 
-  debug(opts, `picked ${sourceAgent} session: ${candidate.path} (score=${candidate.score.toFixed(1)})`);
-  debug(opts, `reasons: ${candidate.reasons.join(' | ')}`);
+  // --grep: peek the original task of each candidate (in priority order:
+  // current repo first; with --all, fall back to others).
+  if (opts.grep) {
+    const pool = opts.all ? all : all.filter((c) => c.relevantToRepo);
+    if (pool.length === 0) {
+      process.stderr.write(
+        `codex-claude-relay: --grep "${opts.grep}": no sessions to search (none for this repo). ` +
+          `Try --all to search all sessions on disk.\n`
+      );
+      return null;
+    }
+    const peek = sourceAgent === 'codex' ? peekCodexOriginalTask : peekClaudeOriginalTask;
+    const previews = await Promise.all(pool.map((c) => peek(c.path, 240)));
+    const matches: SessionCandidate[] = [];
+    for (let i = 0; i < pool.length; i++) {
+      if (matchesGrep(previews[i]!, opts.grep)) matches.push(pool[i]!);
+    }
+    if (matches.length === 0) {
+      process.stderr.write(
+        `codex-claude-relay: --grep "${opts.grep}": no session's original task matched.\n` +
+          `  Use \`relay list ${target} --grep "${opts.grep}"\` to inspect, or widen with --all.\n`
+      );
+      return null;
+    }
+    if (matches.length > 1) {
+      process.stderr.write(
+        `codex-claude-relay: --grep "${opts.grep}": matched ${matches.length} sessions, narrow it down:\n`
+      );
+      for (const m of matches.slice(0, 5)) {
+        process.stderr.write(`  - ${m.path}\n`);
+      }
+      return null;
+    }
+    debug(opts, `--grep "${opts.grep}" → ${matches[0]!.path}`);
+    return { candidate: matches[0]!, sourceAgent, git };
+  }
 
-  return { candidate, all, sourceAgent, git };
+  // Default: most recent session whose recorded cwd is inside this repo.
+  const candidate = all.find((c) => c.relevantToRepo);
+  if (!candidate) {
+    process.stderr.write(
+      `codex-claude-relay: no ${sourceAgent} session was recorded inside this repo (${git.root}).\n` +
+        `  Try one of:\n` +
+        `    relay list ${target} --all              # see all sessions on disk\n` +
+        `    relay ${target} --pick <id-prefix>      # use a specific session\n`
+    );
+    return null;
+  }
+  debug(opts, `default → most recent for repo: ${candidate.path}`);
+  return { candidate, sourceAgent, git };
 }
 
 async function runHandoff(target: AgentName, opts: RelayOptions, mode: 'launch' | 'preview'): Promise<number> {
   const picked = await pickSourceSession(target, opts);
   if (!picked) return 1;
   const { candidate, sourceAgent, git } = picked;
+  process.stderr.write(
+    `codex-claude-relay: using ${sourceAgent} session ${candidate.path.split('/').pop()}\n`
+  );
 
   if (sourceAgent === 'codex') {
     const session = await parseCodexSession(candidate.path);
@@ -381,8 +438,8 @@ function padL(s: string, width: number): string {
 }
 
 async function runList(target: AgentName, opts: RelayOptions): Promise<number> {
-  // `list <target>` means "show me sessions of the OTHER agent that I could hand off to <target>".
-  // e.g. `relay list codex` → show Claude sessions (the source) that we'd hand off TO Codex.
+  // `list <target>` shows the OTHER agent's sessions (the source for handoff).
+  // e.g. `relay list codex` → list Claude sessions (the source) for handoff TO Codex.
   const sourceAgent: AgentName = target === 'claude' ? 'codex' : 'claude';
   const git = detectGitContext(process.cwd());
   if (!git.inRepo) {
@@ -398,64 +455,70 @@ async function runList(target: AgentName, opts: RelayOptions): Promise<number> {
     discovered = existsSync(CLAUDE_PROJECTS_DIR) ? await discoverClaudeSessions(git) : [];
   }
 
-  // Default: hide score-0 sessions (those swept in by the broad fallback scan
-  // but with no cwd match and aged out of the recency window — usually noise).
-  // `--all` shows everything ranked.
-  const relevant = opts.all ? discovered : discovered.filter((c) => c.score > 0);
-
   const sourceLabel = sourceAgent === 'codex' ? 'Codex CLI' : 'Claude Code';
   const header = `codex-claude-relay v${VERSION} — ${sourceLabel} sessions for ${git.root}`;
   process.stdout.write(header + '\n');
   process.stdout.write('-'.repeat(Math.min(header.length, 100)) + '\n');
 
   if (discovered.length === 0) {
-    process.stdout.write(`\n  (no ${sourceLabel} sessions found)\n`);
+    process.stdout.write(`\n  (no ${sourceLabel} sessions found on disk)\n`);
     return 0;
   }
-  if (relevant.length === 0) {
+
+  // Default: only sessions whose recorded cwd is inside this repo.
+  // --all opens the gate to everything.
+  const inRepo = discovered.filter((c) => c.relevantToRepo);
+  const pool = opts.all ? discovered : inRepo;
+
+  if (pool.length === 0) {
     process.stdout.write(
-      `\n  No ${sourceLabel} sessions are clearly relevant to this repo` +
-        ` (${discovered.length} found on disk, all score 0).\n` +
-        `  Pass --all to include them, or check you're \`cd\`-ed into the right repo.\n`
+      `\n  No ${sourceLabel} sessions were recorded inside this repo.\n` +
+        `  ${discovered.length} sessions found on disk overall.\n` +
+        `  Try \`relay list ${target} --all\` to see them, or \`cd\` into the right repo.\n`
     );
     return 0;
   }
 
   const LIMIT = 10;
-  const top = relevant.slice(0, LIMIT);
+  // Peek original task text for the pool head — these reads are mostly IO-bound
+  // and cheap (`findInJsonl` bails out at first user message).
+  const peek = sourceAgent === 'codex' ? peekCodexOriginalTask : peekClaudeOriginalTask;
+  const previewLen = opts.grep ? 240 : 90; // wider window when grepping content
+  const headPool = pool.slice(0, Math.max(LIMIT * 3, 30)); // peek up to 30 for grep
+  const previews = await Promise.all(headPool.map((c) => peek(c.path, previewLen)));
 
-  // Build rows in parallel — peeking is mostly IO-bound.
-  const rows = await Promise.all(
-    top.map(async (c, i) => {
-      const id =
-        sourceAgent === 'codex' ? codexSessionId(c.path) : claudeSessionId(c.path);
-      const shortId = id.length > 13 ? id.slice(0, 12) + '…' : id;
-      const preview =
-        sourceAgent === 'codex'
-          ? await peekCodexOriginalTask(c.path, 80)
-          : await peekClaudeOriginalTask(c.path, 80);
-      return {
-        idx: i + 1,
-        score: c.score.toFixed(0),
-        age: relativeAge(c.mtimeMs),
-        shortId,
-        preview,
-      };
-    })
-  );
+  const filtered = headPool
+    .map((c, i) => ({ c, preview: previews[i]! }))
+    .filter(({ preview }) => (opts.grep ? matchesGrep(preview, opts.grep) : true));
+
+  if (opts.grep && filtered.length === 0) {
+    process.stdout.write(
+      `\n  No ${sourceLabel} sessions matched --grep "${opts.grep}"` +
+        `${opts.all ? '' : ' (within this repo)'}.\n` +
+        `  ${opts.all ? '' : 'Try --all to widen the search.'}\n`
+    );
+    return 0;
+  }
+
+  const rows = filtered.slice(0, LIMIT).map(({ c, preview }) => {
+    const id =
+      sourceAgent === 'codex' ? codexSessionId(c.path) : claudeSessionId(c.path);
+    const shortId = id.length > 13 ? id.slice(0, 12) + '…' : id;
+    // For display, keep preview compact even if we peeked wider for grep.
+    const displayPreview = preview.length > 90 ? preview.slice(0, 89) + '…' : preview;
+    return {
+      age: relativeAge(c.mtimeMs),
+      shortId,
+      preview: displayPreview,
+    };
+  });
 
   // Column widths.
-  const wIdx = Math.max(2, ...rows.map((r) => String(r.idx).length));
-  const wScore = Math.max(5, ...rows.map((r) => r.score.length));
   const wAge = Math.max(6, ...rows.map((r) => r.age.length));
   const wId = Math.max(13, ...rows.map((r) => r.shortId.length));
 
   process.stdout.write(
     '\n  ' +
-      padL('#', wIdx) +
-      '  ' +
-      padL('SCORE', wScore) +
-      '  ' +
       padR('AGE', wAge) +
       '  ' +
       padR('SESSION', wId) +
@@ -465,10 +528,6 @@ async function runList(target: AgentName, opts: RelayOptions): Promise<number> {
   for (const r of rows) {
     process.stdout.write(
       '  ' +
-        padL(String(r.idx), wIdx) +
-        '  ' +
-        padL(r.score, wScore) +
-        '  ' +
         padR(r.age, wAge) +
         '  ' +
         padR(r.shortId, wId) +
@@ -478,34 +537,23 @@ async function runList(target: AgentName, opts: RelayOptions): Promise<number> {
     );
   }
 
-  if (relevant.length > LIMIT) {
-    process.stdout.write(
-      `\n  (${relevant.length - LIMIT} more relevant candidates not shown)\n`
-    );
+  const hiddenFromCap = filtered.length - rows.length;
+  if (hiddenFromCap > 0) {
+    process.stdout.write(`\n  (${hiddenFromCap} more matching sessions not shown)\n`);
   }
-  if (!opts.all && discovered.length > relevant.length) {
+  if (!opts.all && discovered.length > pool.length) {
     process.stdout.write(
-      `  (${discovered.length - relevant.length} sessions from unrelated repos hidden; pass --all to see them)\n`
+      `  (${discovered.length - pool.length} sessions from other repos hidden; pass --all to include them)\n`
     );
   }
 
-  // Helpful footer.
   process.stdout.write(
-    `\nPick one when launching the target agent:\n` +
-      `  relay ${target} --pick <#|id|path>\n` +
+    `\nPick one: relay ${target} --pick <id-or-prefix>\n` +
       `Examples:\n` +
-      `  relay ${target} --pick 1\n` +
       `  relay ${target} --pick ${rows[0]?.shortId.replace('…', '') ?? '<id>'}\n` +
-      `  relay preview ${target} --pick 2\n`
+      `  relay ${target} --grep "<word from original task>"\n` +
+      `  relay preview ${target} --pick ${rows[0]?.shortId.replace('…', '') ?? '<id>'}\n`
   );
-
-  if (opts.debug) {
-    process.stderr.write('\n[relay] full scoring reasons:\n');
-    for (let i = 0; i < top.length; i++) {
-      const c = top[i]!;
-      process.stderr.write(`[relay]   #${i + 1}: ${c.reasons.join(' | ')}\n`);
-    }
-  }
 
   return 0;
 }
@@ -528,26 +576,27 @@ async function runInspect(opts: RelayOptions): Promise<number> {
   lines.push(`  root:        ${git.root}`);
   lines.push(`  branch:      ${git.branch ?? '(unknown)'}`);
   lines.push('');
+  const codexRelevant = codexPaths.filter((c) => c.relevantToRepo);
+  const claudeRelevant = claudePaths.filter((c) => c.relevantToRepo);
+
   lines.push(`Codex sessions (~/.codex/sessions):`);
-  lines.push(`  dir exists:  ${existsSync(CODEX_SESSIONS_DIR)}`);
-  lines.push(`  count:       ${codexPaths.length}`);
-  if (codexPaths.length > 0) {
-    const best = codexPaths[0]!;
-    lines.push(`  best:        ${best.path}`);
-    lines.push(`               score=${best.score.toFixed(1)} mtime=${new Date(best.mtimeMs).toISOString()}`);
-    lines.push(`               cwd=${best.recordedCwd ?? '(unknown)'}`);
-    lines.push(`               reasons: ${best.reasons.join(' | ')}`);
+  lines.push(`  dir exists:    ${existsSync(CODEX_SESSIONS_DIR)}`);
+  lines.push(`  total on disk: ${codexPaths.length}`);
+  lines.push(`  for this repo: ${codexRelevant.length}`);
+  if (codexRelevant.length > 0) {
+    const newest = codexRelevant[0]!;
+    lines.push(`  most recent:   ${newest.path}`);
+    lines.push(`                 ${new Date(newest.mtimeMs).toISOString()}`);
   }
   lines.push('');
   lines.push(`Claude Code sessions (~/.claude/projects):`);
-  lines.push(`  dir exists:  ${existsSync(CLAUDE_PROJECTS_DIR)}`);
-  lines.push(`  count:       ${claudePaths.length}`);
-  if (claudePaths.length > 0) {
-    const best = claudePaths[0]!;
-    lines.push(`  best:        ${best.path}`);
-    lines.push(`               score=${best.score.toFixed(1)} mtime=${new Date(best.mtimeMs).toISOString()}`);
-    lines.push(`               cwd=${best.recordedCwd ?? '(unknown)'}`);
-    lines.push(`               reasons: ${best.reasons.join(' | ')}`);
+  lines.push(`  dir exists:    ${existsSync(CLAUDE_PROJECTS_DIR)}`);
+  lines.push(`  total on disk: ${claudePaths.length}`);
+  lines.push(`  for this repo: ${claudeRelevant.length}`);
+  if (claudeRelevant.length > 0) {
+    const newest = claudeRelevant[0]!;
+    lines.push(`  most recent:   ${newest.path}`);
+    lines.push(`                 ${new Date(newest.mtimeMs).toISOString()}`);
   }
   lines.push('');
   lines.push(`Claude memory for this project:`);

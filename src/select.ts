@@ -1,12 +1,7 @@
 import { basename } from 'node:path';
 import type { SessionCandidate } from './types.js';
 
-export type SelectorKind = 'index' | 'path' | 'id';
-
 export interface SelectorResolution {
-  /** Which interpretation actually matched. */
-  kind: SelectorKind;
-  /** The chosen candidate. */
   candidate: SessionCandidate;
 }
 
@@ -18,16 +13,20 @@ export interface SelectorError {
 }
 
 /**
- * Polymorphic selector resolution for `--pick <selector>`.
+ * Resolve a `--pick` selector against a list of candidates.
  *
- * Rules, in order:
- *   1. all-digits  → 1-based index into the (already-ranked) candidates list
- *   2. contains '/' → path or path-substring match on candidate.path
- *   3. otherwise   → session-id-prefix match on basename(candidate.path)
+ * The selector is a substring of the session UUID. Both Codex and Claude
+ * embed the UUID in the JSONL filename, so we match against
+ * `basename(path, '.jsonl')`. Matching is exact-substring, case-sensitive.
  *
- * Both providers store their session UUID at the end of the JSONL filename, so
- * matching basename(path) handles both Codex (rollout-<ts>-<uuid>.jsonl) and
- * Claude (<uuid>.jsonl) without provider-specific code.
+ * Examples:
+ *   --pick ab11e518                       → unique match → win
+ *   --pick ab11e518-27f5-4b38              → also wins (longer prefix is fine)
+ *   --pick 32533776                       → matches a Codex rollout uuid
+ *   --pick 1                              → matches only if exactly one
+ *                                            session uuid contains "1"
+ *
+ * Returns SelectorError on no match or ambiguous match.
  */
 export function resolveSelector(
   selector: string,
@@ -38,48 +37,29 @@ export function resolveSelector(
     return { kind: 'error', message: 'empty selector' };
   }
 
-  // Index (only when the digit string is plausibly an index — a UUID prefix
-  // like "32533776" is also all-digits but obviously not a row number, so we
-  // only treat it as an index if the value fits within the candidate count).
-  if (/^\d+$/.test(sel)) {
-    const i = parseInt(sel, 10);
-    if (i >= 1 && i <= candidates.length) {
-      return { kind: 'index', candidate: candidates[i - 1]! };
-    }
-    // Out of range — fall through so we try ID-prefix interpretation next.
-    // An index that's clearly too large (e.g. > 99) is almost certainly an
-    // ID prefix; otherwise we'll report a not-found error below.
-  }
-
-  // Path substring
-  if (sel.includes('/')) {
-    const matched = candidates.filter((c) => c.path.includes(sel));
-    if (matched.length === 0) {
-      return { kind: 'error', message: `no session whose path contains "${sel}"` };
-    }
-    if (matched.length > 1) {
-      return {
-        kind: 'error',
-        message: `path substring "${sel}" matched ${matched.length} sessions; narrow it down`,
-        matched,
-      };
-    }
-    return { kind: 'path', candidate: matched[0]! };
-  }
-
-  // Session-id prefix on basename
-  const matched = candidates.filter((c) => basename(c.path, '.jsonl').includes(sel));
+  const matched = candidates.filter((c) =>
+    basename(c.path, '.jsonl').includes(sel)
+  );
   if (matched.length === 0) {
-    return { kind: 'error', message: `no session whose id contains "${sel}"` };
+    return {
+      kind: 'error',
+      message: `no session id contains "${sel}"`,
+    };
   }
   if (matched.length > 1) {
     return {
       kind: 'error',
-      message: `id "${sel}" matched ${matched.length} sessions; use a longer prefix`,
+      message: `selector "${sel}" matched ${matched.length} sessions; use a longer prefix`,
       matched,
     };
   }
-  return { kind: 'id', candidate: matched[0]! };
+  return { candidate: matched[0]! };
+}
+
+/** Case-insensitive substring filter for original-task previews. */
+export function matchesGrep(preview: string, needle: string): boolean {
+  if (!needle) return true;
+  return preview.toLowerCase().includes(needle.toLowerCase());
 }
 
 /** Human-readable relative age, e.g. "1h ago", "3d ago". */

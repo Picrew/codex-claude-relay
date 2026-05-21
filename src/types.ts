@@ -22,10 +22,8 @@ export interface SessionCandidate {
   mtimeMs: number;
   /** Working directory recorded inside the transcript (if any). */
   recordedCwd: string | null;
-  /** Higher = better match. Producers should set this on a 0..100-ish scale. */
-  score: number;
-  /** Human-readable reason for the score (debugging / inspect). */
-  reasons: string[];
+  /** True if the recorded cwd is inside the current git root (or equals it). */
+  relevantToRepo: boolean;
 }
 
 /** A normalized event extracted from either Codex or Claude transcripts. */
@@ -86,8 +84,6 @@ export interface HandoffContent {
 }
 
 export interface RelayOptions {
-  /** Force using the latest session regardless of repo match. */
-  last: boolean;
   /** Include current git diff in the handoff. */
   withDiff: boolean;
   /** Cap on the rendered handoff prompt length (in characters). */
@@ -99,46 +95,43 @@ export interface RelayOptions {
   /** Print verbose info about discovery & parsing. */
   debug: boolean;
   /**
-   * Explicit session selector. If null, use auto-pick (ranking-based).
-   * Polymorphic — see resolveSelector():
-   *   - all digits     → 1-based index into the ranked candidate list
-   *   - contains '/'   → path or path-substring match
-   *   - otherwise      → session UUID prefix match (matches against basename)
+   * Session-id selector (substring match on the session UUID embedded in the
+   * JSONL filename). Examples: `ab11e518`, `32533776`. Null = auto-pick the
+   * most recent session for the current repo.
    */
   pick: string | null;
   /**
-   * In `relay list`, include score-0 candidates (sessions from unrelated repos
-   * that the broad scan swept in). Default: only show candidates with score > 0
-   * (i.e. sessions actually relevant to the current repo).
+   * Case-insensitive substring filter against each session's original-task
+   * preview. On `list`, narrows the table; on `claude`/`codex`, requires the
+   * filter to match exactly one session.
+   */
+  grep: string | null;
+  /**
+   * Include sessions whose recorded cwd is outside the current git root.
+   * Default: only sessions for this repo.
    */
   all: boolean;
 }
 
 export const DEFAULT_OPTIONS: RelayOptions = {
-  last: false,
   withDiff: false,
   maxChars: 12000,
   dryRun: false,
   noRedact: false,
   debug: false,
   pick: null,
+  grep: null,
   all: false,
 };
 
 /** Compact info for the `relay list` table — one row per candidate. */
 export interface SessionListing {
-  /** 1-based rank in the list (highest score first). */
-  index: number;
-  /** Short id (8-char UUID prefix), suitable for `--pick`. */
+  /** Short id (~12-char UUID prefix), suitable for copy-paste into `--pick`. */
   shortId: string;
   /** Absolute path to the JSONL transcript. */
   path: string;
   /** mtime in epoch ms. */
   mtimeMs: number;
-  /** Ranking score from the discovery step. */
-  score: number;
   /** Brief first-user-message preview, capped to ~80 chars. */
   taskPreview: string;
-  /** Top scoring reason for the row (debug hint, kept short). */
-  topReason: string;
 }

@@ -49,8 +49,9 @@ async function readCodexMeta(path: string): Promise<{ cwd: string | null; ts: st
 }
 
 /**
- * Discover Codex rollout files and rank them by relevance to the current git
- * context. Returns the candidates sorted best-first.
+ * Discover Codex rollout files. Returns all candidates on disk, sorted by
+ * mtime descending, each tagged with `relevantToRepo` (true when the session
+ * recorded its cwd inside the current git root).
  */
 export async function discoverCodexSessions(git: GitContext): Promise<SessionCandidate[]> {
   if (!existsSync(CODEX_SESSIONS_DIR)) return [];
@@ -67,52 +68,29 @@ export async function discoverCodexSessions(git: GitContext): Promise<SessionCan
     }
 
     const meta = await readCodexMeta(p);
-    const reasons: string[] = [];
-    let score = 0;
-
-    if (meta.cwd) {
-      if (meta.cwd === git.root) {
-        score += 60;
-        reasons.push('cwd matches git root exactly');
-      } else if (git.inRepo && meta.cwd.startsWith(git.root + sep)) {
-        score += 50;
-        reasons.push('cwd inside git root');
-      } else if (meta.cwd.includes(git.repoName)) {
-        score += 25;
-        reasons.push(`cwd path mentions repo name "${git.repoName}"`);
-      }
-    }
-
-    // Recency weight: linear decay over 14 days, max 30 points.
-    const ageDays = (Date.now() - mtimeMs) / (24 * 3600 * 1000);
-    const recency = Math.max(0, 30 * (1 - ageDays / 14));
-    score += recency;
-    reasons.push(`recency +${recency.toFixed(1)} (age ${ageDays.toFixed(1)}d)`);
+    const relevantToRepo =
+      meta.cwd != null &&
+      (meta.cwd === git.root || (git.inRepo && meta.cwd.startsWith(git.root + sep)));
 
     candidates.push({
       path: p,
       mtimeMs,
       recordedCwd: meta.cwd,
-      score,
-      reasons,
+      relevantToRepo,
     });
   }
 
-  candidates.sort((a, b) => b.score - a.score || b.mtimeMs - a.mtimeMs);
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return candidates;
 }
 
-/** Pick the best Codex session. With `forceLast`, always pick the most recent by mtime. */
+/** Pick the most recent Codex session relevant to the current repo. */
 export async function pickCodexSession(
-  git: GitContext,
-  forceLast: boolean
+  git: GitContext
 ): Promise<SessionCandidate | null> {
   const all = await discoverCodexSessions(git);
-  if (all.length === 0) return null;
-  if (forceLast) {
-    return [...all].sort((a, b) => b.mtimeMs - a.mtimeMs)[0]!;
-  }
-  return all[0]!;
+  const relevant = all.find((c) => c.relevantToRepo);
+  return relevant ?? null;
 }
 
 /**
