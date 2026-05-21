@@ -90,7 +90,7 @@ Verify:
 
 ```bash
 which relay        # should print a path under your npm global prefix
-relay --version    # should print 0.1.0
+relay --version    # should print 0.1.1
 relay inspect      # should list discovered sessions
 ```
 
@@ -200,7 +200,7 @@ relay list codex                # see all relevant Claude sessions, numbered
 ```
 
 ```
-codex-claude-relay v0.1.0 — Claude Code sessions for /Users/alice/work/my-project
+codex-claude-relay v0.1.1 — Claude Code sessions for /Users/alice/work/my-project
 ---------------------------------------------------------------------------------
 
    #  SCORE  AGE      SESSION        ORIGINAL TASK
@@ -375,7 +375,7 @@ relay codex --no-redact
 ```
 $ cd ~/work/my-project
 $ relay inspect
-codex-claude-relay v0.1.0 inspect
+codex-claude-relay v0.1.1 inspect
 
 Git context:
   cwd:         /Users/alice/work/my-project
@@ -608,6 +608,10 @@ test/                 # node:test unit tests
 ```
 
 Dependencies: only `typescript` and `tsx` as devDependencies. Zero runtime dependencies — the CLI uses Node built-ins exclusively.
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for the full version history.
 
 ## License
 

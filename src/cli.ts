@@ -24,7 +24,7 @@ import { resolveSelector, relativeAge } from './select.js';
 import { DEFAULT_OPTIONS } from './types.js';
 import type { AgentName, RelayOptions, SessionCandidate } from './types.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 
 const HELP = `codex-claude-relay v${VERSION} — stateless handoff between Codex CLI and Claude Code
 

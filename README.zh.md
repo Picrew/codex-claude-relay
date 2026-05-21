@@ -89,7 +89,7 @@ npm install -g codex-claude-relay
 
 ```bash
 which relay        # 应该打印 npm 全局 prefix 下的路径
-relay --version    # 应该打印 0.1.0
+relay --version    # 应该打印 0.1.1
 relay inspect      # 应该列出发现的 session
 ```
 
@@ -199,7 +199,7 @@ relay list codex                # 列出所有相关的 Claude session，带编�
 ```
 
 ```
-codex-claude-relay v0.1.0 — Claude Code sessions for /Users/alice/work/my-project
+codex-claude-relay v0.1.1 — Claude Code sessions for /Users/alice/work/my-project
 ---------------------------------------------------------------------------------
 
    #  SCORE  AGE      SESSION        ORIGINAL TASK
@@ -367,7 +367,7 @@ relay codex --no-redact
 ```
 $ cd ~/work/my-project
 $ relay inspect
-codex-claude-relay v0.1.0 inspect
+codex-claude-relay v0.1.1 inspect
 
 Git context:
   cwd:         /Users/alice/work/my-project
@@ -596,6 +596,10 @@ test/                 # node:test 单元测试
 ```
 
 依赖：仅 `typescript` 与 `tsx` 作为 devDependencies。**零运行时依赖**，CLI 完全跑在 Node 内置模块上。
+
+## 更新历史
+
+完整版本变更见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## License
 
